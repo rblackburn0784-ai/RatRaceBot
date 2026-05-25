@@ -1,0 +1,28 @@
+{
+  "gifs": {
+    "start": "assets/gifs/start.gif",
+    "overtake": "assets/gifs/overtake.gif",
+    "damage_minor": "assets/gifs/damage_minor.gif",
+    "damage_major": "assets/gifs/damage_major.gif",
+    "destroyed": "assets/gifs/destroyed.gif",
+    "pit_stop": "assets/gifs/pit_stop.gif",
+    "illegal_move": "assets/gifs/illegal_move.gif",
+    "disqualified": "assets/gifs/disqualified.gif",
+    "lap_leader": "assets/gifs/lap_leader.gif",
+    "finish_line": "assets/gifs/finish_line.gif",
+    "podium": "assets/gifs/podium.gif"
+  },
+  "audio": {
+    "start": "assets/audio/start.mp3",
+    "overtake": "assets/audio/overtake.mp3",
+    "damage_minor": "assets/audio/damage_minor.mp3",
+    "damage_major": "assets/audio/damage_major.mp3",
+    "destroyed": "assets/audio/destroyed.mp3",
+    "pit_stop": "assets/audio/pit_stop.mp3",
+    "illegal_move": "assets/audio/illegal_move.mp3",
+    "disqualified": "assets/audio/disqualified.mp3",
+    "lap_leader": "assets/audio/lap_leader.mp3",
+    "finish_line": "assets/audio/finish_line.mp3",
+    "podium": "assets/audio/podium.mp3"
+  }
+}
