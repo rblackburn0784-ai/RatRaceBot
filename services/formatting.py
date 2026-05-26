@@ -20,7 +20,7 @@ class Embeds:
 
     @staticmethod
     def track_list() -> discord.Embed:
-        e = discord.Embed(title="Rat Rod Tracks", description="Five bad places to make worse decisions.")
+        e = discord.Embed(title="Rat Rod Tracks", description="Bad places to make worse decisions.")
         for key, t in TRACKS.items():
             e.add_field(name=f"{key} — {t.name}", value=f"{t.description}\nHazards: {', '.join(t.hazard_names)}", inline=False)
         return e
@@ -39,6 +39,10 @@ class Embeds:
         lines = []
         for r in sorted(results, key=lambda x: x.position):
             status = "DSQ" if r.disqualified else "DNF" if r.dnf else f"+{r.points} pts"
-            lines.append(f"**{r.position}. {r.team_name}** — {r.driver_name} — {status} — damage {r.damage}% tyres {r.tyre_wear}% warnings {r.warnings}")
+            lines.append(
+                f"**{r.position}. {r.team_name}** - {r.driver_name} - {status} - "
+                f"OTK {r.overtakes} | Crash {r.crashes} | Illegal {r.illegal_moves} | "
+                f"Pit {r.pit_stops} | damage {r.damage}% tyres {r.tyre_wear}% warnings {r.warnings}"
+            )
         e.description = "\n".join(lines)
         return e

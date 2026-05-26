@@ -8,7 +8,7 @@ from data.defaults import TRACKS
 
 TRACK_CHOICES = [
     app_commands.Choice(name=f"{track.name} ({key})", value=key)
-    for key, track in TRACKS.items()
+    for key, track in list(TRACKS.items())[:25]
 ]
 from models.domain import Team
 from models.enums import CarArchetype
@@ -17,6 +17,7 @@ from services.formatting import Embeds
 from services.media import MediaRegistry
 from services.race_engine import RaceEngine
 from services.streamer import RaceStreamer
+from services.team_ids import parse_team_ids_csv
 
 class RacingCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -33,9 +34,9 @@ class RacingCog(commands.Cog):
         if track_key not in TRACKS:
             await interaction.response.send_message("Unknown track. Use `/race_tracks`.", ephemeral=True)
             return
-        ids = [int(x.strip()) for x in team_ids_csv.split(",") if x.strip().isdigit()]
+        ids = parse_team_ids_csv(team_ids_csv)
         teams = []
-        for team_id in ids[:10]:
+        for team_id in ids:
             team = await self.bot.db.get_team(team_id)
             if team:
                 teams.append(team)

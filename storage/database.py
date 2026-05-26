@@ -38,6 +38,12 @@ CREATE TABLE IF NOT EXISTS tournament_teams (
     warnings INTEGER NOT NULL DEFAULT 0,
     dnfs INTEGER NOT NULL DEFAULT 0,
     disqualifications INTEGER NOT NULL DEFAULT 0,
+    overtakes INTEGER NOT NULL DEFAULT 0,
+    crashes INTEGER NOT NULL DEFAULT 0,
+    illegal_moves INTEGER NOT NULL DEFAULT 0,
+    last_minute_wins INTEGER NOT NULL DEFAULT 0,
+    pit_stops INTEGER NOT NULL DEFAULT 0,
+    near_misses INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (tournament_id, team_id)
 );
 
@@ -49,6 +55,13 @@ CREATE TABLE IF NOT EXISTS races (
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     events_json TEXT NOT NULL,
     results_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tournament_schedule (
+    tournament_id INTEGER NOT NULL,
+    race_number INTEGER NOT NULL,
+    track_key TEXT NOT NULL,
+    PRIMARY KEY (tournament_id, race_number)
 );
 """
 
@@ -63,7 +76,23 @@ class Database:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        conn = self._require()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(tournament_teams)").fetchall()}
+        stat_columns = {
+            "overtakes": "INTEGER NOT NULL DEFAULT 0",
+            "crashes": "INTEGER NOT NULL DEFAULT 0",
+            "illegal_moves": "INTEGER NOT NULL DEFAULT 0",
+            "last_minute_wins": "INTEGER NOT NULL DEFAULT 0",
+            "pit_stops": "INTEGER NOT NULL DEFAULT 0",
+            "near_misses": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for column, definition in stat_columns.items():
+            if column not in columns:
+                conn.execute(f"ALTER TABLE tournament_teams ADD COLUMN {column} {definition}")
 
     async def close(self) -> None:
         if self.conn:
@@ -134,8 +163,45 @@ class Database:
             (tournament_id, team_id),
         )
 
+    async def set_tournament_schedule(self, tournament_id: int, track_keys: list[str]) -> None:
+        await self.execute("DELETE FROM tournament_schedule WHERE tournament_id=?", (tournament_id,))
+        for race_number, track_key in enumerate(track_keys, start=1):
+            await self.execute(
+                "INSERT INTO tournament_schedule(tournament_id, race_number, track_key) VALUES (?, ?, ?)",
+                (tournament_id, race_number, track_key),
+            )
+
+    async def tournament_schedule(self, tournament_id: int) -> list[sqlite3.Row]:
+        return await self.fetchall(
+            "SELECT race_number, track_key FROM tournament_schedule WHERE tournament_id=? ORDER BY race_number",
+            (tournament_id,),
+        )
+
+    async def tournament_race_count(self, tournament_id: int) -> int:
+        row = await self.fetchone("SELECT COUNT(*) AS race_count FROM races WHERE tournament_id=?", (tournament_id,))
+        return int(row["race_count"]) if row else 0
+
+    async def next_scheduled_track(self, tournament_id: int) -> tuple[int, str] | None:
+        next_race_number = await self.tournament_race_count(tournament_id) + 1
+        row = await self.fetchone(
+            """
+            SELECT race_number, track_key
+            FROM tournament_schedule
+            WHERE tournament_id=? AND race_number=?
+            """,
+            (tournament_id, next_race_number),
+        )
+        if not row:
+            return None
+        return int(row["race_number"]), str(row["track_key"])
+
     async def get_tournament(self, tournament_id: int):
         return await self.fetchone("SELECT * FROM tournaments WHERE id=?", (tournament_id,))
+
+    async def current_tournament(self):
+        return await self.fetchone(
+            "SELECT * FROM tournaments WHERE status='open' ORDER BY id DESC LIMIT 1"
+        )
 
     async def close_tournament(self, tournament_id: int) -> None:
         await self.execute("UPDATE tournaments SET status='closed' WHERE id=?", (tournament_id,))
@@ -167,12 +233,20 @@ class Database:
                     races = races + 1,
                     warnings = warnings + ?,
                     dnfs = dnfs + ?,
-                    disqualifications = disqualifications + ?
+                    disqualifications = disqualifications + ?,
+                    overtakes = overtakes + ?,
+                    crashes = crashes + ?,
+                    illegal_moves = illegal_moves + ?,
+                    last_minute_wins = last_minute_wins + ?,
+                    pit_stops = pit_stops + ?,
+                    near_misses = near_misses + ?
                 WHERE tournament_id=? AND team_id=?
                 """,
                 (
                     r["points"], 1 if r["position"] == 1 else 0, 1 if r["position"] <= 3 else 0,
                     r["warnings"], 1 if r["dnf"] else 0, 1 if r["disqualified"] else 0,
+                    r.get("overtakes", 0), r.get("crashes", 0), r.get("illegal_moves", 0),
+                    r.get("last_minute_wins", 0), r.get("pit_stops", 0), r.get("near_misses", 0),
                     tournament_id, r["team_id"],
                 ),
             )

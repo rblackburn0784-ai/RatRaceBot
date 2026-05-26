@@ -65,6 +65,12 @@ class RaceResult:
     disqualified: bool
     damage: int
     tyre_wear: int
+    overtakes: int = 0
+    crashes: int = 0
+    illegal_moves: int = 0
+    last_minute_wins: int = 0
+    pit_stops: int = 0
+    near_misses: int = 0
 
 @dataclass(slots=True)
 class RaceState:
@@ -80,3 +86,8 @@ class RaceState:
     pit_stops: int = 0
     momentum: int = 0
     car_colour: str = ""
+    overtakes: int = 0
+    crashes: int = 0
+    illegal_moves: int = 0
+    last_minute_wins: int = 0
+    near_misses: int = 0

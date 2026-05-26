@@ -1,15 +1,411 @@
+from dataclasses import dataclass
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from data.defaults import PARTS
+from data.defaults import CAR_DEFINITIONS, PARTS
 from models.domain import Team
-from models.enums import CarArchetype
+from models.enums import CarArchetype, PartSlot
 from models.stats import DriverStats
 from services.formatting import Embeds
+from services.garage_sheet import render_parts_sheet
 
 
 STAT_CHOICES = [app_commands.Choice(name=str(i), value=i) for i in range(1, 9)]
+
+
+@dataclass
+class TeamWizardState:
+    name: str | None = None
+    driver: str | None = None
+    pit_crew: str | None = None
+    car_name: str | None = None
+    car_type: CarArchetype | None = None
+    stats: DriverStats | None = None
+
+    @property
+    def ready(self) -> bool:
+        return all((self.name, self.driver, self.pit_crew, self.car_name, self.car_type, self.stats))
+
+
+class CarTypeSelect(discord.ui.Select):
+    def __init__(self, wizard: "TeamWizardView"):
+        self.wizard = wizard
+        options = [
+            discord.SelectOption(
+                label=car.value,
+                value=car.value,
+                description=CAR_DEFINITIONS[car.value].description[:100],
+                default=wizard.state.car_type == car,
+            )
+            for car in CarArchetype
+        ]
+        super().__init__(placeholder="Choose a car archetype", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.wizard.state.car_type = CarArchetype(self.values[0])
+        for option in self.options:
+            option.default = option.value == self.values[0]
+        await self.wizard.refresh(interaction)
+
+
+class TeamDetailsModal(discord.ui.Modal):
+    def __init__(self, wizard: "TeamWizardView"):
+        super().__init__(title="Team Details")
+        self.wizard = wizard
+        self.name_input = discord.ui.TextInput(
+            label="Team name",
+            default=wizard.state.name or "",
+            max_length=60,
+        )
+        self.driver_input = discord.ui.TextInput(
+            label="Driver name",
+            default=wizard.state.driver or "",
+            max_length=60,
+        )
+        self.pit_crew_input = discord.ui.TextInput(
+            label="Pit crew name",
+            default=wizard.state.pit_crew or "",
+            max_length=60,
+        )
+        self.car_name_input = discord.ui.TextInput(
+            label="Rod name",
+            default=wizard.state.car_name or "",
+            max_length=60,
+        )
+        self.add_item(self.name_input)
+        self.add_item(self.driver_input)
+        self.add_item(self.pit_crew_input)
+        self.add_item(self.car_name_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        values = [
+            str(self.name_input.value).strip(),
+            str(self.driver_input.value).strip(),
+            str(self.pit_crew_input.value).strip(),
+            str(self.car_name_input.value).strip(),
+        ]
+        if not all(values):
+            await interaction.response.send_message("Every team detail needs a value.", ephemeral=True)
+            return
+
+        self.wizard.state.name, self.wizard.state.driver, self.wizard.state.pit_crew, self.wizard.state.car_name = values
+        await self.wizard.refresh(interaction)
+
+
+class DriverStatsModal(discord.ui.Modal):
+    def __init__(self, wizard: "TeamWizardView"):
+        super().__init__(title="Driver Stats")
+        self.wizard = wizard
+        default = ""
+        if wizard.state.stats:
+            stats = wizard.state.stats
+            default = f"{stats.nerve}, {stats.handling}, {stats.aggression}, {stats.mechanics}, {stats.reflexes}, {stats.showmanship}"
+        self.stats_input = discord.ui.TextInput(
+            label="N,H,A,M,R,S stats",
+            placeholder="Example: 4,4,4,4,4,4 (total max 24)",
+            default=default,
+            max_length=60,
+        )
+        self.add_item(self.stats_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw_parts = str(self.stats_input.value).replace("\n", ",").replace("/", ",").split(",")
+        try:
+            values = [int(part.strip()) for part in raw_parts if part.strip()]
+            if len(values) != 6:
+                raise ValueError("Enter six numbers: nerve, handling, aggression, mechanics, reflexes, showmanship.")
+            stats = DriverStats(*values)
+            stats.validate()
+        except ValueError as exc:
+            await interaction.response.send_message(f"Stats not saved: {exc}", ephemeral=True)
+            return
+
+        self.wizard.state.stats = stats
+        await self.wizard.refresh(interaction)
+
+
+class TeamWizardView(discord.ui.View):
+    def __init__(self, cog: "TeamsCog", owner_id: int):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.state = TeamWizardState()
+        self.car_select = CarTypeSelect(self)
+        self.add_item(self.car_select)
+        self.update_controls()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message("This team wizard belongs to someone else.", ephemeral=True)
+        return False
+
+    def update_controls(self) -> None:
+        self.create_team.disabled = not self.state.ready
+
+    def embed(self) -> discord.Embed:
+        state = self.state
+        embed = discord.Embed(title="Create Racing Team")
+        embed.add_field(
+            name="Team",
+            value=(
+                f"Name: **{state.name or 'Not set'}**\n"
+                f"Driver: **{state.driver or 'Not set'}**\n"
+                f"Pit Crew: **{state.pit_crew or 'Not set'}**\n"
+                f"Rod: **{state.car_name or 'Not set'}**"
+            ),
+            inline=False,
+        )
+        embed.add_field(name="Car Type", value=state.car_type.value if state.car_type else "Not selected", inline=False)
+        if state.stats:
+            embed.add_field(
+                name="Driver Stats",
+                value=(
+                    f"Nerve {state.stats.nerve} | Handling {state.stats.handling} | Aggression {state.stats.aggression}\n"
+                    f"Mechanics {state.stats.mechanics} | Reflexes {state.stats.reflexes} | Showmanship {state.stats.showmanship}\n"
+                    f"Total: {state.stats.total}/24"
+                ),
+                inline=False,
+            )
+        else:
+            embed.add_field(name="Driver Stats", value="Not set", inline=False)
+        return embed
+
+    async def refresh(self, interaction: discord.Interaction) -> None:
+        self.update_controls()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    @discord.ui.button(label="Team Details", style=discord.ButtonStyle.primary)
+    async def team_details(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(TeamDetailsModal(self))
+
+    @discord.ui.button(label="Driver Stats", style=discord.ButtonStyle.primary)
+    async def driver_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(DriverStatsModal(self))
+
+    @discord.ui.button(label="Create Team", style=discord.ButtonStyle.success)
+    async def create_team(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.state.ready:
+            await interaction.response.send_message("Finish the wizard before creating the team.", ephemeral=True)
+            return
+
+        team = Team(
+            None,
+            self.state.name or "",
+            self.state.driver or "",
+            self.state.pit_crew or "",
+            self.state.car_name or "",
+            self.state.car_type or CarArchetype.COUPE_32,
+            self.state.stats or DriverStats(4, 4, 4, 4, 4, 4),
+            [],
+        )
+        try:
+            team_id = await self.cog.bot.db.create_team(team)
+            team.id = team_id
+        except Exception as exc:
+            await interaction.response.send_message(f"Team not created: {exc}", ephemeral=True)
+            return
+
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            content=f"Created team **{team.name}** as ID `{team_id}`.",
+            embed=Embeds.team_sheet(team),
+            view=self,
+        )
+
+
+class PartSlotSelect(discord.ui.Select):
+    def __init__(self, wizard: "PartsWizardView"):
+        self.wizard = wizard
+        options = []
+        installed_slots = wizard.installed_slots()
+        for slot in PartSlot:
+            status = "installed" if slot in installed_slots else "empty"
+            options.append(
+                discord.SelectOption(
+                    label=f"{slot.value.title()} - {status}",
+                    value=slot.value,
+                    default=wizard.selected_slot == slot,
+                )
+            )
+        super().__init__(placeholder="Choose a part slot", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.wizard.selected_slot = PartSlot(self.values[0])
+        self.wizard.selected_part_key = self.wizard.first_available_part_key()
+        await self.wizard.refresh(interaction)
+
+
+class PartChoiceSelect(discord.ui.Select):
+    def __init__(self, wizard: "PartsWizardView"):
+        self.wizard = wizard
+        current = wizard.installed_part_key_for_slot(wizard.selected_slot)
+        if current:
+            part = PARTS[current]
+            options = [discord.SelectOption(label=f"Installed: {part.name}", value=current)]
+            disabled = True
+        else:
+            part_keys = wizard.available_part_keys_for_slot(wizard.selected_slot)
+            if not part_keys:
+                options = [discord.SelectOption(label="No parts available for this slot", value="none")]
+                disabled = True
+            else:
+                if wizard.selected_part_key not in part_keys:
+                    wizard.selected_part_key = part_keys[0]
+                options = [
+                    discord.SelectOption(
+                        label=PARTS[key].name,
+                        value=key,
+                        description=PARTS[key].description[:100],
+                        default=wizard.selected_part_key == key,
+                    )
+                    for key in part_keys[:25]
+                ]
+                disabled = False
+        super().__init__(
+            placeholder="Choose a part to install",
+            min_values=1,
+            max_values=1,
+            options=options,
+            disabled=disabled,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.wizard.selected_part_key = self.values[0]
+        await self.wizard.refresh(interaction)
+
+
+class PartsWizardView(discord.ui.View):
+    def __init__(self, cog: "TeamsCog", owner_id: int, team: Team):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.team = team
+        self.selected_slot = PartSlot.ENGINE
+        self.selected_part_key: str | None = self.first_available_part_key()
+        self.rebuild_items()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message("This parts wizard belongs to someone else.", ephemeral=True)
+        return False
+
+    def installed_slots(self) -> set[PartSlot]:
+        return {PARTS[key].slot for key in self.team.parts if key in PARTS}
+
+    def installed_part_key_for_slot(self, slot: PartSlot) -> str | None:
+        return next((key for key in self.team.parts if key in PARTS and PARTS[key].slot == slot), None)
+
+    def available_part_keys_for_slot(self, slot: PartSlot) -> list[str]:
+        return [key for key, part in PARTS.items() if part.slot == slot and key not in self.team.parts]
+
+    def first_available_part_key(self) -> str | None:
+        parts = self.available_part_keys_for_slot(self.selected_slot)
+        return parts[0] if parts else None
+
+    def rebuild_items(self) -> None:
+        self.clear_items()
+        current = self.installed_part_key_for_slot(self.selected_slot)
+        can_install = bool(self.selected_part_key) and not current
+        self.add_item(PartSlotSelect(self))
+        self.add_item(PartChoiceSelect(self))
+
+        install_button = discord.ui.Button(label="Install Part", style=discord.ButtonStyle.success, disabled=not can_install)
+        install_button.callback = self.install_selected_part
+        self.add_item(install_button)
+
+        remove_button = discord.ui.Button(label="Remove Slot Part", style=discord.ButtonStyle.danger, disabled=not current)
+        remove_button.callback = self.remove_slot_part
+        self.add_item(remove_button)
+
+        refresh_button = discord.ui.Button(label="Refresh Sheet", style=discord.ButtonStyle.secondary)
+        refresh_button.callback = self.refresh_sheet
+        self.add_item(refresh_button)
+
+    def embed(self, has_sheet: bool) -> discord.Embed:
+        current_key = self.installed_part_key_for_slot(self.selected_slot)
+        current = PARTS[current_key] if current_key else None
+        selected = PARTS[self.selected_part_key] if self.selected_part_key in PARTS else None
+        embed = discord.Embed(
+            title=f"Parts Wizard: #{self.team.id} {self.team.name}",
+            description=f"{self.team.car_name} - {self.team.archetype.value}",
+        )
+        embed.add_field(name="Selected Slot", value=self.selected_slot.value.title(), inline=True)
+        embed.add_field(name="Installed", value=current.name if current else "Empty", inline=True)
+        embed.add_field(name="Selected Part", value=selected.name if selected else "None", inline=True)
+        if selected:
+            mods = ", ".join(f"{key.title()} {value:+d}" for key, value in selected.modifiers.as_dict().items() if value)
+            embed.add_field(name="Selected Part Effects", value=mods or "No stat modifiers", inline=False)
+        if has_sheet:
+            embed.set_image(url="attachment://parts_wizard.png")
+        else:
+            embed.add_field(
+                name="Image Sheet",
+                value="Install `Pillow` from requirements.txt to render the garage sheet image.",
+                inline=False,
+            )
+        return embed
+
+    def garage_file(self) -> discord.File | None:
+        sheet = render_parts_sheet(self.team)
+        if not sheet:
+            return None
+        return discord.File(sheet, filename="parts_wizard.png")
+
+    async def reload_team(self) -> None:
+        if self.team.id is None:
+            return
+        team = await self.cog.bot.db.get_team(self.team.id)
+        if team:
+            self.team = team
+
+    async def refresh(self, interaction: discord.Interaction) -> None:
+        self.rebuild_items()
+        file = self.garage_file()
+        await interaction.response.edit_message(
+            embed=self.embed(has_sheet=bool(file)),
+            attachments=[file] if file else [],
+            view=self,
+        )
+
+    async def install_selected_part(self, interaction: discord.Interaction):
+        if self.team.id is None or not self.selected_part_key or self.selected_part_key not in PARTS:
+            await interaction.response.send_message("Choose a valid part first.", ephemeral=True)
+            return
+        if self.installed_part_key_for_slot(self.selected_slot):
+            await interaction.response.send_message("Remove the current part in that slot first.", ephemeral=True)
+            return
+        part = PARTS[self.selected_part_key]
+        if part.slot != self.selected_slot:
+            await interaction.response.send_message("That part does not fit the selected slot.", ephemeral=True)
+            return
+        parts = [*self.team.parts, self.selected_part_key]
+        await self.cog.bot.db.update_team_parts(self.team.id, parts)
+        await self.reload_team()
+        self.selected_part_key = self.first_available_part_key()
+        await self.refresh(interaction)
+
+    async def remove_slot_part(self, interaction: discord.Interaction):
+        if self.team.id is None:
+            await interaction.response.send_message("Team is missing an ID.", ephemeral=True)
+            return
+        current = self.installed_part_key_for_slot(self.selected_slot)
+        if not current:
+            await interaction.response.send_message("That slot is already empty.", ephemeral=True)
+            return
+        parts = [key for key in self.team.parts if key != current]
+        await self.cog.bot.db.update_team_parts(self.team.id, parts)
+        await self.reload_team()
+        self.selected_part_key = self.first_available_part_key()
+        await self.refresh(interaction)
+
+    async def refresh_sheet(self, interaction: discord.Interaction):
+        await self.reload_team()
+        await self.refresh(interaction)
 
 
 class TeamsCog(commands.Cog):
@@ -157,6 +553,11 @@ class TeamsCog(commands.Cog):
             embed=Embeds.team_sheet(team),
         )
 
+    @app_commands.command(name="team_wizard", description="Create a racing team with a guided setup flow.")
+    async def team_wizard(self, interaction: discord.Interaction):
+        view = TeamWizardView(self, interaction.user.id)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
     @app_commands.command(name="team_list", description="List all racing teams.")
     async def team_list(self, interaction: discord.Interaction):
         teams = await self.bot.db.list_teams()
@@ -176,6 +577,30 @@ class TeamsCog(commands.Cog):
             return
 
         await interaction.response.send_message(embed=Embeds.team_sheet(team))
+
+    @app_commands.command(name="parts_wizard", description="Install and remove rod parts with a visual garage sheet.")
+    @app_commands.autocomplete(team_id=team_autocomplete)
+    async def parts_wizard(self, interaction: discord.Interaction, team_id: int):
+        team = await self.bot.db.get_team(team_id)
+        if not team:
+            await interaction.response.send_message("Team not found.", ephemeral=True)
+            return
+
+        view = PartsWizardView(self, interaction.user.id, team)
+        file = view.garage_file()
+        if file:
+            await interaction.response.send_message(
+                embed=view.embed(has_sheet=True),
+                file=file,
+                view=view,
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                embed=view.embed(has_sheet=False),
+                view=view,
+                ephemeral=True,
+            )
 
     @app_commands.command(name="team_add_part", description="Fit a custom part to a team rod.")
     @app_commands.autocomplete(team_id=team_autocomplete, part_key=add_part_autocomplete)

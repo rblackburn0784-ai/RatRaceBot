@@ -65,34 +65,64 @@ PARTS: dict[str, Part] = {
 TRACKS: dict[str, Track] = {
     "neon_mile": Track(
         "neon_mile", "The Neon Mile", "Downtown street circuit under diner signs and police sirens.", 10,
-        corner_difficulty=4, straight_bias=2, surface_roughness=3, pit_difficulty=3, hazard_rate=12,
-        modifiers=CarStats(handling=1, braking=1, speed=-1),
+        corner_difficulty=4, straight_bias=2, surface_roughness=3, pit_difficulty=3, hazard_rate=13,
+        modifiers=CarStats(speed=-1, acceleration=1, handling=2, braking=1, durability=-1, heat=1, intimidation=1, reliability=-1),
         hazard_names=("loose manhole cover", "oil patch outside the diner", "crowd spill near the kerb"),
     ),
     "county_line": Track(
         "county_line", "County Line Drag Loop", "Long straights, dusty returns, and too much speed for good sense.", 10,
-        corner_difficulty=2, straight_bias=5, surface_roughness=2, pit_difficulty=2, hazard_rate=9,
-        modifiers=CarStats(speed=2, acceleration=2, handling=-1),
+        corner_difficulty=2, straight_bias=5, surface_roughness=2, pit_difficulty=2, hazard_rate=10,
+        modifiers=CarStats(speed=3, acceleration=2, handling=-2, braking=-1, heat=2, reliability=-1, pit_friendliness=1),
         hazard_names=("dust cloud", "stray farm truck", "crosswind over the fields"),
     ),
     "junkyard_bowl": Track(
         "junkyard_bowl", "Junkyard Bowl", "A brutal oval built around scrap piles and bad decisions.", 10,
-        corner_difficulty=5, straight_bias=1, surface_roughness=5, pit_difficulty=4, hazard_rate=18,
-        modifiers=CarStats(durability=2, pit_friendliness=1, speed=-2),
+        corner_difficulty=5, straight_bias=1, surface_roughness=5, pit_difficulty=4, hazard_rate=19,
+        modifiers=CarStats(speed=-3, acceleration=-1, handling=-1, durability=3, braking=1, intimidation=2, reliability=-2, pit_friendliness=2),
         hazard_names=("loose hubcap", "scrap metal shard", "falling stack of tyres"),
     ),
     "salt_ghost": Track(
         "salt_ghost", "Salt Ghost Flats", "Wide open salt-flat speed with glare, heat, and almost no forgiveness.", 10,
-        corner_difficulty=1, straight_bias=6, surface_roughness=1, pit_difficulty=2, hazard_rate=8,
-        modifiers=CarStats(speed=3, acceleration=1, braking=-1, heat=1),
+        corner_difficulty=1, straight_bias=6, surface_roughness=1, pit_difficulty=2, hazard_rate=9,
+        modifiers=CarStats(speed=4, acceleration=1, handling=-2, braking=-2, durability=-1, heat=3, reliability=-2),
         hazard_names=("blinding salt glare", "engine-cooking heat shimmer", "sudden sidewind"),
     ),
     "switchback_66": Track(
         "switchback_66", "Switchback 66", "Mountain road, diner stop, hairpins, cliffs, and prayer.", 10,
-        corner_difficulty=6, straight_bias=1, surface_roughness=4, pit_difficulty=5, hazard_rate=16,
-        modifiers=CarStats(handling=2, braking=2, acceleration=-1, speed=-2),
+        corner_difficulty=6, straight_bias=1, surface_roughness=4, pit_difficulty=5, hazard_rate=17,
+        modifiers=CarStats(speed=-3, acceleration=-1, handling=3, braking=3, durability=-1, heat=1, reliability=-1, pit_friendliness=-1),
         hazard_names=("falling gravel", "blind hairpin", "smoke across the road"),
+    ),
+    "fairground_figure8": Track(
+        "fairground_figure8", "Fairground Figure-8", "A crossing-track carnival trap lit by bulbs, banners, and bad timing.", 10,
+        corner_difficulty=5, straight_bias=2, surface_roughness=3, pit_difficulty=4, hazard_rate=20,
+        modifiers=CarStats(speed=-1, acceleration=2, handling=2, braking=-1, durability=-2, intimidation=3, reliability=-1, pit_friendliness=-1),
+        hazard_names=("cross-traffic near miss", "fallen bunting", "spilled soda slick"),
+    ),
+    "riverfront_sprint": Track(
+        "riverfront_sprint", "Riverfront Sprint", "Fast riverside avenues with damp cobbles, fog, and nowhere graceful to stop.", 10,
+        corner_difficulty=3, straight_bias=4, surface_roughness=2, pit_difficulty=3, hazard_rate=12,
+        modifiers=CarStats(speed=2, acceleration=1, handling=-2, braking=-2, durability=1, heat=-1, reliability=1, pit_friendliness=1),
+        hazard_names=("wet cobbles", "fog bank off the river", "loose dock rope"),
+    ),
+    "foundry_run": Track(
+        "foundry_run", "Foundry Run", "Industrial lanes around furnace heat, rail spurs, and metal dust.", 10,
+        corner_difficulty=4, straight_bias=3, surface_roughness=4, pit_difficulty=4, hazard_rate=16,
+        modifiers=CarStats(speed=1, acceleration=-1, handling=-1, braking=1, durability=2, heat=3, intimidation=2, reliability=-3, pit_friendliness=-1),
+        hazard_names=("rail crossing kick", "cinder spray", "steam burst from the foundry wall"),
+    ),
+    "boardwalk_dash": Track(
+        "boardwalk_dash", "Boardwalk Dash", "A seaside blast over flexing planks, salt air, and too many spectators.", 10,
+        corner_difficulty=3, straight_bias=4, surface_roughness=5, pit_difficulty=3, hazard_rate=15,
+        modifiers=CarStats(speed=2, acceleration=2, handling=-1, braking=-1, durability=-3, heat=-1, intimidation=1, reliability=-1),
+        hazard_names=("splintered board", "sand drift", "startled crowd surge"),
+    ),
+    "midnight_oval": Track(
+        "midnight_oval", "Midnight Moonshine Oval", "A blacktop oval behind the warehouses, built for nerve, noise, and contact.", 10,
+        corner_difficulty=4, straight_bias=3, surface_roughness=2, pit_difficulty=2, hazard_rate=14,
+        modifiers=CarStats(speed=1, acceleration=2, handling=1, braking=-1, durability=1, heat=2, intimidation=3, reliability=-1, pit_friendliness=2),
+        hazard_names=("oil drum marker", "hidden pothole", "officials' flashlight sweep"),
     ),
 }
 
-POINTS_BY_POSITION = {1: 15, 2: 12, 3: 10, 4: 8, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1}
+POINTS_BY_POSITION = {position: 11 - position for position in range(1, 11)}

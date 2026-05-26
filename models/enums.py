@@ -30,5 +30,6 @@ class EventType(str, Enum):
     ILLEGAL_MOVE = "illegal_move"
     WARNING = "warning"
     DISQUALIFIED = "disqualified"
+    LAST_MINUTE_WIN = "last_minute_win"
     FINISH = "finish_line"
     PODIUM = "podium"
