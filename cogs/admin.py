@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from services.access import deny_admin_only, is_admin
 from services.formatting import Embeds
 from services.media import MediaRegistry
 
@@ -9,6 +10,12 @@ class AdminCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.media = MediaRegistry()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if is_admin(interaction):
+            return True
+        await deny_admin_only(interaction)
+        return False
 
     @app_commands.command(name="ratbot_init", description="Initialise the Rat Rod Racing database.")
     async def ratbot_init(self, interaction: discord.Interaction):

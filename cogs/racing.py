@@ -13,6 +13,7 @@ TRACK_CHOICES = [
 from models.domain import Team
 from models.enums import CarArchetype
 from models.stats import DriverStats
+from services.access import deny_admin_only, is_admin
 from services.formatting import Embeds
 from services.media import MediaRegistry
 from services.race_engine import RaceEngine
@@ -23,6 +24,12 @@ class RacingCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.media = MediaRegistry()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if is_admin(interaction):
+            return True
+        await deny_admin_only(interaction)
+        return False
 
     @app_commands.command(name="race_tracks", description="List available tracks.")
     async def race_tracks(self, interaction: discord.Interaction):

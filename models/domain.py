@@ -42,6 +42,7 @@ class Team:
     archetype: CarArchetype
     stats: DriverStats
     parts: list[str] = field(default_factory=list)
+    owner_user_id: int | None = None
 
 @dataclass(slots=True)
 class RaceEvent:

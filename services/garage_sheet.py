@@ -4,6 +4,7 @@ from pathlib import Path
 from data.defaults import PARTS
 from models.domain import Team
 from models.enums import CarArchetype, PartSlot
+from services.builds import BuildService, ILLEGAL_PART_DISQUALIFICATION_RISK
 
 SHEET_SIZE = (1536, 1024)
 CAR_ASSET_DIR = Path("assets/cars")
@@ -145,7 +146,17 @@ def _draw_slots(draw, fonts, team: Team) -> None:
         if installed:
             draw.text((box[0] + 18, box[1] + 22), installed.name, fill="black", font=fonts["body"])
             mods = [f"{key.title()} {value:+d}" for key, value in installed.modifiers.as_dict().items() if value]
-            for index, line_text in enumerate(mods[:3], start=1):
+            if BuildService.is_illegal_part_key(installed.key):
+                draw.text(
+                    (box[0] + 18, box[1] + 52),
+                    f"ILLEGAL: +{ILLEGAL_PART_DISQUALIFICATION_RISK}% DSQ risk",
+                    fill=(170, 20, 20),
+                    font=fonts["small"],
+                )
+                start_index = 2
+            else:
+                start_index = 1
+            for index, line_text in enumerate(mods[:3], start=start_index):
                 draw.text((box[0] + 18, box[1] + 22 + index * 30), line_text, fill=(60, 60, 60), font=fonts["small"])
         else:
             draw.text((box[0] + 18, box[1] + 24), "No part installed", fill=(95, 95, 95), font=fonts["body"])

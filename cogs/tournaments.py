@@ -11,6 +11,7 @@ TRACK_CHOICES = [
     app_commands.Choice(name=f"{track.name} ({key})", value=key)
     for key, track in list(TRACKS.items())[:25]
 ]
+from services.access import deny_admin_only, is_admin
 from services.formatting import Embeds
 from services.media import MediaRegistry
 from services.race_engine import RaceEngine
@@ -250,6 +251,12 @@ class TournamentsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.media = MediaRegistry()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if is_admin(interaction):
+            return True
+        await deny_admin_only(interaction)
+        return False
 
     async def _run_tournament_race(
         self,

@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS teams (
     car_name TEXT NOT NULL,
     archetype TEXT NOT NULL,
     stats_json TEXT NOT NULL,
-    parts_json TEXT NOT NULL DEFAULT '[]'
+    parts_json TEXT NOT NULL DEFAULT '[]',
+    owner_user_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS tournaments (
@@ -81,6 +82,13 @@ class Database:
 
     def _migrate(self) -> None:
         conn = self._require()
+        team_columns = {row["name"] for row in conn.execute("PRAGMA table_info(teams)").fetchall()}
+        if "owner_user_id" not in team_columns:
+            conn.execute("ALTER TABLE teams ADD COLUMN owner_user_id INTEGER")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_owner_user_id ON teams(owner_user_id) WHERE owner_user_id IS NOT NULL"
+        )
+
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(tournament_teams)").fetchall()}
         stat_columns = {
             "overtakes": "INTEGER NOT NULL DEFAULT 0",
@@ -122,9 +130,18 @@ class Database:
         stats_json = json.dumps(asdict(team.stats))
         parts_json = json.dumps(team.parts)
         cur = await self.execute(
-            """INSERT INTO teams(name, driver_name, pit_crew_name, car_name, archetype, stats_json, parts_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (team.name, team.driver_name, team.pit_crew_name, team.car_name, team.archetype.value, stats_json, parts_json),
+            """INSERT INTO teams(name, driver_name, pit_crew_name, car_name, archetype, stats_json, parts_json, owner_user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                team.name,
+                team.driver_name,
+                team.pit_crew_name,
+                team.car_name,
+                team.archetype.value,
+                stats_json,
+                parts_json,
+                team.owner_user_id,
+            ),
         )
         return int(cur.lastrowid)
 
@@ -140,6 +157,7 @@ class Database:
             archetype=CarArchetype(row["archetype"]),
             stats=stats,
             parts=json.loads(row["parts_json"]),
+            owner_user_id=row["owner_user_id"] if "owner_user_id" in row.keys() else None,
         )
 
     async def get_team(self, team_id: int) -> Team | None:
@@ -149,6 +167,43 @@ class Database:
     async def list_teams(self) -> list[Team]:
         rows = await self.fetchall("SELECT * FROM teams ORDER BY id")
         return [self.row_to_team(r) for r in rows]
+
+    async def get_team_by_owner(self, owner_user_id: int) -> Team | None:
+        row = await self.fetchone("SELECT * FROM teams WHERE owner_user_id=?", (owner_user_id,))
+        return self.row_to_team(row) if row else None
+
+    async def update_team_profile(self, team: Team) -> None:
+        if team.id is None:
+            raise ValueError("Team is missing an ID.")
+        await self.execute(
+            """
+            UPDATE teams
+            SET name=?, driver_name=?, pit_crew_name=?, car_name=?, archetype=?, stats_json=?
+            WHERE id=?
+            """,
+            (
+                team.name,
+                team.driver_name,
+                team.pit_crew_name,
+                team.car_name,
+                team.archetype.value,
+                json.dumps(asdict(team.stats)),
+                team.id,
+            ),
+        )
+
+    async def team_in_open_tournament(self, team_id: int) -> bool:
+        row = await self.fetchone(
+            """
+            SELECT 1
+            FROM tournament_teams tt
+            JOIN tournaments t ON t.id = tt.tournament_id
+            WHERE tt.team_id=? AND t.status='open'
+            LIMIT 1
+            """,
+            (team_id,),
+        )
+        return bool(row)
 
     async def update_team_parts(self, team_id: int, parts: list[str]) -> None:
         await self.execute("UPDATE teams SET parts_json=? WHERE id=?", (json.dumps(parts), team_id))

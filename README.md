@@ -6,7 +6,9 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 
 - Create racing teams with driver, pit crew, car type, and 6 driver stats.
 - 7 car archetypes, each with positive and negative modifiers.
-- Custom rod parts with fair trade-offs: engines, tyres, suspension, brakes, body, transmission, fuel, and illicit/dirty tricks parts.
+- 64 custom rod parts: 8 each for engine, tyres, suspension, brakes, body, fuel, transmission, and trick slots.
+- Every part has positive and negative performance trade-offs, and each slot includes one marked illegal part.
+- Illegal parts add risk-versus-reward power: each illegal part adds +6% disqualification risk per race and is warned in the picker.
 - 10 tracks with sharper positive and negative modifiers, lap events, surface hazards, corner difficulty, straight speed bias, and pit-lane difficulty.
 - 10-car races over 10 laps.
 - Semi-real-time race streaming with commentary, overtakes, accidents, pit stops, tyre wear, damage, illegal contact warnings, disqualifications, DNFs, and finish classification.
@@ -15,6 +17,7 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - Tournament stat tracking for overtakes, crashes, illegal moves, last-minute wins, near misses, and pit stops.
 - Media hooks for GIFs and audio clips you create yourself.
 - SQLite persistence.
+- Discord ownership controls: admins can use all commands, while regular drivers can create one linked team and manage only their own team/parts wizards.
 - Deterministic race seed saved for replay/debugging.
 
 ## Install
@@ -42,13 +45,14 @@ python main.py
 ## Commands
 
 ### Teams
-- `/team_wizard` — create a team with a guided setup flow.
-- `/team_create` — create a team.
-- `/team_list` — list teams.
-- `/team_sheet` — view full team sheet.
-- `/parts_wizard` — install and remove rod parts with a visual garage sheet.
-- `/team_add_part` — add a part to a team rod.
-- `/team_remove_part` — remove a part.
+- `/team_wizard` — create your one linked team with a guided setup flow.
+- `/team_edit_wizard` — edit your team names, car, and stats unless the team is in an open tournament.
+- `/parts_wizard` — install and remove parts on your own rod with a visual garage sheet. Parts can still be changed during tournaments.
+- `/team_create` — admin-only team creation.
+- `/team_list` — admin-only team list.
+- `/team_sheet` — admin-only team sheet lookup.
+- `/team_add_part` — admin-only direct part install.
+- `/team_remove_part` — admin-only direct part removal.
 
 ### Racing
 - `/race_tracks` — list tracks.
@@ -69,6 +73,15 @@ python main.py
 ### Admin
 - `/ratbot_init` — initialise database.
 - `/media_list` — list media keys.
+- `/parts_catalogue` — list available rod parts and modifiers.
+
+## Discord Access Rules
+
+- Discord users with Administrator permission can use every command.
+- Regular drivers can only use `/team_wizard`, `/team_edit_wizard`, and `/parts_wizard`.
+- Regular drivers can create one team, linked to their Discord user ID.
+- Regular drivers can only edit their own linked team.
+- Team profile edits are locked while that team is in an open tournament, but parts are still editable.
 
 ## Media
 

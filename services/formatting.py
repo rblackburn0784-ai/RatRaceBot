@@ -1,7 +1,21 @@
 import discord
 from data.defaults import PARTS, TRACKS
 from models.domain import RaceResult, Team
+from models.enums import PartSlot
 from services.builds import BuildService
+
+STAT_LABELS = {
+    "speed": "Spd",
+    "acceleration": "Acc",
+    "handling": "Hnd",
+    "durability": "Dur",
+    "braking": "Brk",
+    "heat": "Heat",
+    "intimidation": "Int",
+    "reliability": "Rel",
+    "pit_friendliness": "Pit",
+}
+
 
 class Embeds:
     @staticmethod
@@ -16,6 +30,13 @@ class Embeds:
         ), inline=False)
         e.add_field(name="Effective Rod Stats", value="\n".join(f"{k.title()}: {v:+d}" for k, v in eff.as_dict().items()), inline=False)
         e.add_field(name="Parts", value=BuildService.part_summary(team), inline=False)
+        illegal_risk = BuildService.illegal_disqualification_risk_percent(team)
+        if illegal_risk:
+            e.add_field(
+                name="Illegal Parts Warning",
+                value=f"{BuildService.illegal_part_count(team)} illegal part(s): {illegal_risk}% disqualification risk per race.",
+                inline=False,
+            )
         return e
 
     @staticmethod
@@ -27,10 +48,23 @@ class Embeds:
 
     @staticmethod
     def parts_list() -> discord.Embed:
-        e = discord.Embed(title="Rat Rod Parts Catalogue")
-        for key, p in PARTS.items():
-            mods = ", ".join(f"{k} {v:+d}" for k, v in p.modifiers.as_dict().items() if v)
-            e.add_field(name=f"{key} — {p.name} [{p.slot.value}]", value=f"{p.description}\n{mods or 'No stat modifiers'}", inline=False)
+        e = discord.Embed(
+            title="Rat Rod Parts Catalogue",
+            description="Illegal parts are marked and add +6% disqualification risk per race.",
+        )
+        for slot in PartSlot:
+            lines = []
+            for key, p in PARTS.items():
+                if p.slot != slot:
+                    continue
+                mods = " ".join(
+                    f"{STAT_LABELS.get(stat, stat.title())}{value:+d}"
+                    for stat, value in p.modifiers.as_dict().items()
+                    if value
+                )
+                marker = " [ILLEGAL +6% DSQ]" if BuildService.is_illegal_part_key(key) else ""
+                lines.append(f"`{key}` - {p.name}{marker}: {mods or 'No modifiers'}")
+            e.add_field(name=f"{slot.value.title()} Parts", value="\n".join(lines), inline=False)
         return e
 
     @staticmethod

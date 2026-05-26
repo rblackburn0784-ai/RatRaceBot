@@ -90,6 +90,14 @@ DISQUALIFIED_LINES = (
     "{car} {team} finally runs out of excuses. Black flag, disqualified.",
 )
 
+SCRUTINEERING_DSQ_LINES = (
+    "Scrutineering catches {car} {team} before the flag. {illegal_count} illegal part(s), {risk}% risk, and the black flag wins.",
+    "{car} {team} gets hauled aside in inspection. The hidden hardware is too hot: disqualified.",
+    "Officials crawl over {car} {car_name} and find enough trouble to end {team}'s day before lap one.",
+    "{car} {driver} gambled on illegal kit and lost the paperwork fight. {team} is disqualified.",
+    "{car} {team} fails the pre-race inspection with {illegal_count} illegal part(s). Risk became reality.",
+)
+
 PIT_FAST_LINES = (
     "Lightning pit stop! {car} {pit_crew} hammers {car_name} back into shape. Damage -{fixed}, tyres -{tyres}.",
     "{car} {pit_crew} works like a dance hall knife act. {car_name} leaves with damage -{fixed}, tyres -{tyres}.",
@@ -383,6 +391,27 @@ class RaceEngine:
                     self._media_key("disqualified", state.car_colour),
                 )
 
+    def _maybe_illegal_scrutineering(self, state: RaceState) -> None:
+        risk = BuildService.illegal_disqualification_risk_percent(state.team)
+        if state.dnf or state.disqualified or risk <= 0:
+            return
+        if self._roll(100) <= risk:
+            state.disqualified = True
+            self._comment(
+                EventType.DISQUALIFIED,
+                0,
+                self._line(
+                    SCRUTINEERING_DSQ_LINES,
+                    car=self._colour_label(state),
+                    driver=state.team.driver_name,
+                    team=state.team.name,
+                    car_name=state.team.car_name,
+                    illegal_count=BuildService.illegal_part_count(state.team),
+                    risk=risk,
+                ),
+                self._media_key("disqualified", state.car_colour),
+            )
+
     def _maybe_pit(self, state: RaceState, lap: int) -> None:
         if state.dnf or state.disqualified or lap == self.track.laps:
             return
@@ -490,7 +519,12 @@ class RaceEngine:
             "start",
         )
 
+        for state in list(self.states):
+            self._maybe_illegal_scrutineering(state)
+
         for lap in range(1, self.track.laps + 1):
+            if not any(not s.dnf and not s.disqualified for s in self.states):
+                break
             for state in list(self.states):
                 if state.dnf or state.disqualified:
                     continue
