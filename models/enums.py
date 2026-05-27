@@ -19,6 +19,13 @@ class PartSlot(str, Enum):
     FUEL = "fuel"
     TRICK = "trick"
 
+class CrewSlot(str, Enum):
+    CREW_CHIEF = "crew_chief"
+    LEAD_MECHANIC = "lead_mechanic"
+    TYRE_CHANGER = "tyre_changer"
+    FUEL_RUNNER = "fuel_runner"
+    SPOTTER = "spotter"
+
 class EventType(str, Enum):
     START = "start"
     LAP = "lap"

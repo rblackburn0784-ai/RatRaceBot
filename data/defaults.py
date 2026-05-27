@@ -1,5 +1,5 @@
-from models.domain import CarDefinition, Part, Track
-from models.enums import CarArchetype, PartSlot
+from models.domain import CarDefinition, CrewMember, Part, Track
+from models.enums import CarArchetype, CrewSlot, PartSlot
 from models.stats import CarStats
 
 CAR_DEFINITIONS: dict[str, CarDefinition] = {
@@ -112,6 +112,38 @@ PARTS: dict[str, Part] = {
     "reinforced_push_bar": Part("reinforced_push_bar", "Reinforced Push Bar", PartSlot.TRICK, "Makes rivals think twice, costs speed.", CarStats(intimidation=3, durability=2, speed=-2, braking=-1), 420),
     "lucky_hula_girl": Part("lucky_hula_girl", "Lucky Dashboard Charm", PartSlot.TRICK, "No one can prove it helps, but the driver believes.", CarStats(reliability=1, intimidation=-1, pit_friendliness=1), 50),
     "illegal_road_spikes": Part("illegal_road_spikes", "ILLEGAL Drop-Spike Rig", PartSlot.TRICK, "Nasty hidden hardware. Adds disqualification scrutiny.", CarStats(intimidation=5, handling=-2, durability=-1, reliability=-4, speed=-1), 1100, ("illegal_risk",)),
+}
+
+CREW_MEMBERS: dict[str, CrewMember] = {
+    "chief_mae_clipboard": CrewMember("chief_mae_clipboard", "Mae Clipboard", CrewSlot.CREW_CHIEF, "Calm calls and tidy pit timing, but conservative under pressure.", CarStats(pit_friendliness=3, reliability=2, acceleration=-1), 450),
+    "chief_buzz_harper": CrewMember("chief_buzz_harper", "Buzz Harper", CrewSlot.CREW_CHIEF, "Aggressive strategy that finds speed and heat in equal measure.", CarStats(speed=1, acceleration=1, heat=2, pit_friendliness=1, reliability=-1), 520),
+    "chief_dot_malloy": CrewMember("chief_dot_malloy", "Dot Malloy", CrewSlot.CREW_CHIEF, "Reads the race beautifully, but demands careful crew work.", CarStats(handling=1, braking=1, pit_friendliness=2, reliability=-1), 500),
+    "chief_big_sal": CrewMember("chief_big_sal", "Big Sal DeMarco", CrewSlot.CREW_CHIEF, "Keeps everyone brave and loud, sometimes too loud.", CarStats(intimidation=2, durability=1, pit_friendliness=-1, heat=1), 380),
+    "chief_lenora_lateflag": CrewMember("chief_lenora_lateflag", "Lenora Lateflag", CrewSlot.CREW_CHIEF, "Excellent late-race decisions with fussy early calls.", CarStats(reliability=1, handling=1, pit_friendliness=1, speed=-1), 430),
+
+    "mechanic_wrench_wilma": CrewMember("mechanic_wrench_wilma", "Wrench Wilma", CrewSlot.LEAD_MECHANIC, "Fixes damage fast and keeps the rod alive, with extra weight in the toolkit.", CarStats(durability=2, reliability=2, speed=-1, pit_friendliness=1), 500),
+    "mechanic_otto_sparks": CrewMember("mechanic_otto_sparks", "Otto Sparks", CrewSlot.LEAD_MECHANIC, "Hot tunes, hotter engine bay.", CarStats(speed=2, acceleration=1, heat=3, reliability=-2), 560),
+    "mechanic_tiny_valves": CrewMember("mechanic_tiny_valves", "Tiny Valves", CrewSlot.LEAD_MECHANIC, "Precision engine work that hates rough hits.", CarStats(acceleration=2, reliability=1, durability=-1, pit_friendliness=-1), 480),
+    "mechanic_grace_grease": CrewMember("mechanic_grace_grease", "Grace Grease", CrewSlot.LEAD_MECHANIC, "Keeps repairs smooth and predictable, but not spectacular.", CarStats(pit_friendliness=3, reliability=1, intimidation=-1), 420),
+    "mechanic_rusty_nails": CrewMember("mechanic_rusty_nails", "Rusty Nails", CrewSlot.LEAD_MECHANIC, "Cheap fixes with surprising bite and questionable finish.", CarStats(intimidation=1, durability=1, reliability=-2, pit_friendliness=2), 300),
+
+    "tyre_peggy_pneumatic": CrewMember("tyre_peggy_pneumatic", "Peggy Pneumatic", CrewSlot.TYRE_CHANGER, "Lightning rubber swaps, but she runs the tyres hard.", CarStats(pit_friendliness=4, acceleration=1, durability=-1, reliability=-1), 520),
+    "tyre_slick_mickey": CrewMember("tyre_slick_mickey", "Slick Mickey", CrewSlot.TYRE_CHANGER, "Finds grip everywhere, at the cost of braking confidence.", CarStats(handling=2, acceleration=1, braking=-1, pit_friendliness=1), 480),
+    "tyre_lou_whitewall": CrewMember("tyre_lou_whitewall", "Lou Whitewall", CrewSlot.TYRE_CHANGER, "Balanced tyre choices and steady pit work.", CarStats(handling=1, braking=1, reliability=1), 400),
+    "tyre_rose_rimshot": CrewMember("tyre_rose_rimshot", "Rose Rimshot", CrewSlot.TYRE_CHANGER, "Tough wheels for rough tracks, slow swaps.", CarStats(durability=2, braking=1, pit_friendliness=-2), 380),
+    "tyre_frankie_flatspot": CrewMember("tyre_frankie_flatspot", "Frankie Flatspot", CrewSlot.TYRE_CHANGER, "Cheap rubber tricks with wild launch bite.", CarStats(acceleration=2, handling=-1, reliability=-1, pit_friendliness=1), 320),
+
+    "fuel_ivana_octane": CrewMember("fuel_ivana_octane", "Ivana Octane", CrewSlot.FUEL_RUNNER, "Hot fuel mixes and quick cans, but the gauges run angry.", CarStats(speed=1, acceleration=2, heat=3, reliability=-2), 560),
+    "fuel_pops_stromberg": CrewMember("fuel_pops_stromberg", "Pops Stromberg", CrewSlot.FUEL_RUNNER, "Simple fuelling, fewer surprises.", CarStats(reliability=3, heat=-1, acceleration=-1), 420),
+    "fuel_june_firecan": CrewMember("fuel_june_firecan", "June Firecan", CrewSlot.FUEL_RUNNER, "Fast refuels and fearless hands, with a little extra danger.", CarStats(pit_friendliness=3, heat=2, intimidation=1, reliability=-1), 470),
+    "fuel_eddie_drip": CrewMember("fuel_eddie_drip", "Eddie Drip", CrewSlot.FUEL_RUNNER, "Squeezes range from scraps, but makes a mess under pressure.", CarStats(pit_friendliness=2, reliability=-2, speed=1), 280),
+    "fuel_mabel_meter": CrewMember("fuel_mabel_meter", "Mabel Meter", CrewSlot.FUEL_RUNNER, "Careful fuel math that keeps heat down and pace modest.", CarStats(heat=-2, reliability=2, speed=-1), 390),
+
+    "spotter_carla_corners": CrewMember("spotter_carla_corners", "Carla Corners", CrewSlot.SPOTTER, "Calls traffic early and helps the driver find clean lines.", CarStats(handling=2, braking=1, pit_friendliness=1), 500),
+    "spotter_vince_vulture": CrewMember("spotter_vince_vulture", "Vince Vulture", CrewSlot.SPOTTER, "Spots weakness in rivals, not always the safest route.", CarStats(intimidation=2, speed=1, reliability=-1), 450),
+    "spotter_nora_neon": CrewMember("spotter_nora_neon", "Nora Neon", CrewSlot.SPOTTER, "Brilliant night eyes and smooth calls, less help in heavy contact.", CarStats(handling=1, reliability=2, durability=-1), 430),
+    "spotter_larry_loudspeaker": CrewMember("spotter_larry_loudspeaker", "Larry Loudspeaker", CrewSlot.SPOTTER, "Big energy on the radio, sometimes too much chatter.", CarStats(intimidation=1, acceleration=1, pit_friendliness=1, handling=-1), 360),
+    "spotter_sue_sideeye": CrewMember("spotter_sue_sideeye", "Sue Side-Eye", CrewSlot.SPOTTER, "Keeps the driver out of trouble, but calls cautious overtakes.", CarStats(reliability=2, braking=1, speed=-1), 400),
 }
 
 TRACKS: dict[str, Track] = {

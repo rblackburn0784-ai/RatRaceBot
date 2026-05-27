@@ -7,7 +7,7 @@ def is_admin(interaction: discord.Interaction) -> bool:
 
 
 async def deny_admin_only(interaction: discord.Interaction) -> None:
-    message = "Only admins can use that command. Drivers can use `/team_wizard`, `/team_edit_wizard`, and `/parts_wizard`."
+    message = "Only admins can use that command. Drivers can use `/team_wizard`, `/team_edit_wizard`, `/parts_wizard`, `/pit_crew_wizard`, `/race_tracks`, and `/race_wizard`."
     if interaction.response.is_done():
         await interaction.followup.send(message, ephemeral=True)
     else:

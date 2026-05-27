@@ -180,13 +180,24 @@ PODIUM_LINES = (
 )
 
 class RaceEngine:
-    def __init__(self, track_key: str, teams: list[Team], seed: str | None = None):
+    def __init__(
+        self,
+        track_key: str,
+        teams: list[Team],
+        seed: str | None = None,
+        initial_damage_by_team_id: dict[int, int] | None = None,
+        laps: int | None = None,
+    ):
         if track_key not in TRACKS:
             raise ValueError(f"Unknown track '{track_key}'.")
         if len(teams) < 2 or len(teams) > 10:
             raise ValueError("A race needs between 2 and 10 teams. Tournament races should use 10.")
         self.track = TRACKS[track_key]
+        self.laps = laps or self.track.laps
+        if self.laps not in {5, 7, 10}:
+            raise ValueError("Race laps must be 5, 7, or 10.")
         self.teams = teams
+        self.initial_damage_by_team_id = initial_damage_by_team_id or {}
         self.seed = seed or f"ratrod-{int(time.time())}-{random.randint(1000,9999)}"
         self.rng = random.Random(self.seed)
         self.events: list[RaceEvent] = []
@@ -234,7 +245,7 @@ class RaceEngine:
         return min(rivals, key=lambda s: abs(s.position - state.position))
 
     def _track_adjusted_car_stats(self, team: Team):
-        return BuildService.effective_car_stats(team) + self.track.modifiers
+        return BuildService.clamp_car_stats(BuildService.effective_car_stats(team) + self.track.modifiers)
 
     def _pace_score(self, state: RaceState) -> int:
         car = self._track_adjusted_car_stats(state.team)
@@ -279,6 +290,7 @@ class RaceEngine:
             - car.reliability
             - drv.reflexes
         )
+        chance = max(5, min(65, chance))
         if self._roll(100) <= chance:
             hazard = self.rng.choice(self.track.hazard_names)
             save = self._roll(20) + drv.handling + drv.reflexes + car.handling + car.braking - self.track.corner_difficulty
@@ -413,16 +425,18 @@ class RaceEngine:
             )
 
     def _maybe_pit(self, state: RaceState, lap: int) -> None:
-        if state.dnf or state.disqualified or lap == self.track.laps:
+        if state.dnf or state.disqualified or lap == self.laps:
             return
         needs_pit = state.damage >= 45 or state.tyre_wear >= 60
-        strategic = lap in {4, 6, 8} and (state.tyre_wear >= 38 or state.damage >= 28)
+        strategic_laps = {max(2, self.laps // 2), max(3, self.laps - 2)}
+        strategic = lap in strategic_laps and (state.tyre_wear >= 38 or state.damage >= 28)
         if not (needs_pit or strategic):
             return
         car = self._track_adjusted_car_stats(state.team)
         drv = state.team.stats
         state.pit_stops += 1
-        pit_roll = self._roll(20) + drv.mechanics + car.pit_friendliness + car.reliability - self.track.pit_difficulty
+        pit_bonus = max(-6, min(14, (drv.mechanics + car.pit_friendliness + car.reliability) // 2))
+        pit_roll = self._roll(20) + pit_bonus - self.track.pit_difficulty
         time_cost = 9.0 + self.track.pit_difficulty + self.rng.uniform(0, 6)
         media_key = self._media_key("pit_stop", state.car_colour)
         if pit_roll >= 22:
@@ -496,7 +510,17 @@ class RaceEngine:
             s.position = idx
 
     def run(self) -> tuple[list[RaceEvent], list[RaceResult], str]:
-        self.states = [RaceState(team=t, position=i + 1) for i, t in enumerate(self.teams)]
+        self.states = []
+        for i, team in enumerate(self.teams):
+            starting_damage = max(0, min(30, self.initial_damage_by_team_id.get(team.id or 0, 0)))
+            self.states.append(
+                RaceState(
+                    team=team,
+                    position=i + 1,
+                    damage=starting_damage,
+                    starting_damage=starting_damage,
+                )
+            )
         self.rng.shuffle(self.states)
         for idx, s in enumerate(self.states, start=1):
             s.position = idx
@@ -504,6 +528,7 @@ class RaceEngine:
 
         colour_lines = "\n".join(
             f"{self._colour_label(s)} — **{s.team.name}** ({s.team.driver_name}) in *{s.team.car_name}*"
+            f"{f' — {s.starting_damage}% carryover damage' if s.starting_damage else ''}"
             for s in self.states
         )
         self._comment(
@@ -512,7 +537,7 @@ class RaceEngine:
             self._line(
                 START_LINES,
                 count=len(self.states),
-                laps=self.track.laps,
+                laps=self.laps,
                 track=self.track.name,
                 colour_lines=colour_lines,
             ),
@@ -522,7 +547,7 @@ class RaceEngine:
         for state in list(self.states):
             self._maybe_illegal_scrutineering(state)
 
-        for lap in range(1, self.track.laps + 1):
+        for lap in range(1, self.laps + 1):
             if not any(not s.dnf and not s.disqualified for s in self.states):
                 break
             for state in list(self.states):
@@ -598,7 +623,7 @@ class RaceEngine:
                         ),
                         self._media_key("overtake", s.car_colour, defender_colour),
                     )
-                    if lap == self.track.laps and s.position == 1 and old > 1:
+                    if lap == self.laps and s.position == 1 and old > 1:
                         s.last_minute_wins += 1
                         self._comment(
                             EventType.LAST_MINUTE_WIN,
@@ -619,7 +644,7 @@ class RaceEngine:
                 self._line(
                     LAP_LEADER_LINES,
                     lap=lap,
-                    laps=self.track.laps,
+                    laps=self.laps,
                     car=self._colour_label(leader),
                     driver=leader.team.driver_name,
                     team=leader.team.name,
@@ -645,6 +670,7 @@ class RaceEngine:
                 disqualified=s.disqualified,
                 damage=min(100, s.damage),
                 tyre_wear=min(100, s.tyre_wear),
+                starting_damage=s.starting_damage,
                 overtakes=s.overtakes,
                 crashes=s.crashes,
                 illegal_moves=s.illegal_moves,
@@ -660,7 +686,7 @@ class RaceEngine:
         third_colour = podium_states[2].car_colour if len(podium_states) > 2 else None
         self._comment(
             EventType.FINISH,
-            self.track.laps,
+            self.laps,
             self._line(
                 FINISH_LINES,
                 car=self._colour_label(winner),
@@ -673,7 +699,7 @@ class RaceEngine:
         )
         self._comment(
             EventType.PODIUM,
-            self.track.laps,
+            self.laps,
             self._line(
                 PODIUM_LINES,
                 first=podium[0].team_name,

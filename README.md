@@ -9,12 +9,16 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - 64 custom rod parts: 8 each for engine, tyres, suspension, brakes, body, fuel, transmission, and trick slots.
 - Every part has positive and negative performance trade-offs, and each slot includes one marked illegal part.
 - Illegal parts add risk-versus-reward power: each illegal part adds +6% disqualification risk per race and is warned in the picker.
+- Custom pit crew loadouts with 5 crew positions, 5 selectable members per position, and crew stat buffs/debuffs.
+- Build stats use fair-play caps and one item per slot, so duplicate saved parts or runaway part/crew stacking cannot overpower the race engine.
 - 10 tracks with sharper positive and negative modifiers, lap events, surface hazards, corner difficulty, straight speed bias, and pit-lane difficulty.
 - 10-car races over 10 laps.
 - Semi-real-time race streaming with commentary, overtakes, accidents, pit stops, tyre wear, damage, illegal contact warnings, disqualifications, DNFs, and finish classification.
+- Single-race wizard for drivers with 5, 7, or 10 lap races and Full AI, Players Only, or Players Plus AI modes.
 - Tournament system for 10-team scheduled championships with short, medium, and long formats.
 - Tournament scoring gives 10 points for 1st down to 1 point for 10th.
 - Tournament stat tracking for overtakes, crashes, illegal moves, last-minute wins, near misses, and pit stops.
+- Tournament-only persistent damage carries a repaired, capped slice of car damage into the next race for extra stakes without runaway punishment.
 - Media hooks for GIFs and audio clips you create yourself.
 - SQLite persistence.
 - Discord ownership controls: admins can use all commands, while regular drivers can create one linked team and manage only their own team/parts wizards.
@@ -48,6 +52,7 @@ python main.py
 - `/team_wizard` — create your one linked team with a guided setup flow.
 - `/team_edit_wizard` — edit your team names, car, and stats unless the team is in an open tournament.
 - `/parts_wizard` — install and remove parts on your own rod with a visual garage sheet. Parts can still be changed during tournaments.
+- `/pit_crew_wizard` — assign pit crew members with buffs/debuffs and a visual crew sheet.
 - `/team_create` — admin-only team creation.
 - `/team_list` — admin-only team list.
 - `/team_sheet` — admin-only team sheet lookup.
@@ -56,8 +61,9 @@ python main.py
 
 ### Racing
 - `/race_tracks` — list tracks.
-- `/race_quick` — run a race from selected team IDs.
-- `/race_demo` — auto-create demo teams and run a 10-car race.
+- `/race_wizard` — start a single race as a regular driver.
+- `/race_quick` — admin-only race from selected team IDs.
+- `/race_demo` — admin-only auto-created 10-car demo race.
 
 ### Tournaments
 - `/tournament_wizard` — create a tournament with 10 teams and a short, medium, or long track schedule.
@@ -78,10 +84,18 @@ python main.py
 ## Discord Access Rules
 
 - Discord users with Administrator permission can use every command.
-- Regular drivers can only use `/team_wizard`, `/team_edit_wizard`, and `/parts_wizard`.
+- Regular drivers can only use `/team_wizard`, `/team_edit_wizard`, `/parts_wizard`, `/pit_crew_wizard`, `/race_tracks`, and `/race_wizard`.
 - Regular drivers can create one team, linked to their Discord user ID.
 - Regular drivers can only edit their own linked team.
 - Team profile edits are locked while that team is in an open tournament, but parts are still editable.
+- Pit crew loadouts are also editable during tournaments.
+- Tournaments and direct/admin race commands remain admin-only.
+
+## Single Race Wizard
+
+- Full AI Race: your team races 9 AI teams.
+- Players Only: posts a 10-minute join lobby; the race starts with joined player teams only if at least 4 teams joined.
+- Players Plus AI: same 10-minute join lobby, then AI fills empty slots up to 10 racers if at least 4 player teams joined.
 
 ## Media
 

@@ -64,6 +64,8 @@ def tournament_stats_embed(tournament, rows) -> discord.Embed:
     embed.add_field(name="Last-Minute Wins", value=_leader_lines(rows, "last_minute_wins", "wins"), inline=True)
     embed.add_field(name="Near Misses", value=_leader_lines(rows, "near_misses", "saves"), inline=True)
     embed.add_field(name="Pit Stops", value=_leader_lines(rows, "pit_stops", "stops"), inline=True)
+    embed.add_field(name="Carryover Damage", value=_leader_lines(rows, "carryover_damage", "damage"), inline=True)
+    embed.add_field(name="Peak Damage", value=_leader_lines(rows, "peak_carryover_damage", "peak"), inline=True)
     return embed
 
 
@@ -279,8 +281,11 @@ class TournamentsCog(commands.Cog):
             await interaction.response.send_message("I need at least 2 valid tournament teams, ideally 10.", ephemeral=True)
             return
 
-        await interaction.response.send_message(f"Tournament race started: **{TRACKS[track_key].name}** with {len(teams)} teams.")
-        engine = RaceEngine(track_key, teams, seed)
+        carryover_damage = await self.bot.db.tournament_carryover_damage(tournament_id)
+        damaged_teams = [team for team in teams if carryover_damage.get(team.id or 0, 0) > 0]
+        damage_note = f" {len(damaged_teams)} team(s) are carrying repaired damage." if damaged_teams else ""
+        await interaction.response.send_message(f"Tournament race started: **{TRACKS[track_key].name}** with {len(teams)} teams.{damage_note}")
+        engine = RaceEngine(track_key, teams, seed, initial_damage_by_team_id=carryover_damage)
         events, results, used_seed = engine.run()
         result_dicts = RaceEngine.results_to_dicts(results)
         await self.bot.db.apply_race_results(tournament_id, result_dicts)
@@ -332,7 +337,8 @@ class TournamentsCog(commands.Cog):
         for i, r in enumerate(rows, start=1):
             lines.append(
                 f"**{i}. {r['name']}** - {r['points']} pts | W {r['wins']} | Podiums {r['podiums']} | "
-                f"Races {r['races']} | Overtakes {r['overtakes']} | Crashes {r['crashes']} | Illegal {r['illegal_moves']}"
+                f"Races {r['races']} | Car Dmg {r['carryover_damage']}% | Overtakes {r['overtakes']} | "
+                f"Crashes {r['crashes']} | Illegal {r['illegal_moves']}"
             )
         await interaction.response.send_message("\n".join(lines[:30]))
 

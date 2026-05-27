@@ -4,12 +4,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from data.defaults import CAR_DEFINITIONS, PARTS
+from data.defaults import CAR_DEFINITIONS, CREW_MEMBERS, PARTS
 from models.domain import Team
-from models.enums import CarArchetype, PartSlot
+from models.enums import CarArchetype, CrewSlot, PartSlot
 from models.stats import DriverStats
 from services.access import deny_admin_only, is_admin
 from services.builds import BuildService, ILLEGAL_PART_DISQUALIFICATION_RISK
+from services.crew_sheet import render_crew_sheet
 from services.formatting import Embeds
 from services.garage_sheet import render_parts_sheet
 
@@ -32,6 +33,14 @@ def _part_label(key: str) -> str:
 def _part_description(key: str) -> str:
     prefix = f"Warning: +{ILLEGAL_PART_DISQUALIFICATION_RISK}% disqualification risk. " if BuildService.is_illegal_part_key(key) else ""
     return _shorten(f"{prefix}{PARTS[key].description}")
+
+
+def _crew_label(key: str) -> str:
+    return CREW_MEMBERS[key].name
+
+
+def _crew_description(key: str) -> str:
+    return _shorten(CREW_MEMBERS[key].description)
 
 
 @dataclass
@@ -328,6 +337,7 @@ class EditTeamWizardView(discord.ui.View):
             self.state.stats or self.team.stats,
             self.team.parts,
             self.team.owner_user_id,
+            self.team.crew,
         )
         try:
             await self.cog.bot.db.update_team_profile(updated)
@@ -547,6 +557,182 @@ class PartsWizardView(discord.ui.View):
         await self.cog.bot.db.update_team_parts(self.team.id, parts)
         await self.reload_team()
         self.selected_part_key = self.first_available_part_key()
+        await self.refresh(interaction)
+
+    async def refresh_sheet(self, interaction: discord.Interaction):
+        await self.reload_team()
+        await self.refresh(interaction)
+
+
+class CrewSlotSelect(discord.ui.Select):
+    def __init__(self, wizard: "PitCrewWizardView"):
+        self.wizard = wizard
+        options = []
+        for slot in CrewSlot:
+            member_key = wizard.team.crew.get(slot.value)
+            status = CREW_MEMBERS[member_key].name if member_key in CREW_MEMBERS else "empty"
+            options.append(
+                discord.SelectOption(
+                    label=f"{slot.value.replace('_', ' ').title()} - {status}"[:100],
+                    value=slot.value,
+                    default=wizard.selected_slot == slot,
+                )
+            )
+        super().__init__(placeholder="Choose a pit crew position", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.wizard.selected_slot = CrewSlot(self.values[0])
+        self.wizard.selected_member_key = self.wizard.current_member_key_for_slot(self.wizard.selected_slot) or self.wizard.first_member_key()
+        await self.wizard.refresh(interaction)
+
+
+class CrewMemberSelect(discord.ui.Select):
+    def __init__(self, wizard: "PitCrewWizardView"):
+        self.wizard = wizard
+        member_keys = wizard.member_keys_for_slot(wizard.selected_slot)
+        if wizard.selected_member_key not in member_keys:
+            wizard.selected_member_key = member_keys[0] if member_keys else None
+        options = [
+            discord.SelectOption(
+                label=_crew_label(key),
+                value=key,
+                description=_crew_description(key),
+                default=wizard.selected_member_key == key,
+            )
+            for key in member_keys[:25]
+        ]
+        if not options:
+            options = [discord.SelectOption(label="No crew members available", value="none")]
+        super().__init__(
+            placeholder="Choose a crew member",
+            min_values=1,
+            max_values=1,
+            options=options,
+            disabled=not bool(member_keys),
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.wizard.selected_member_key = self.values[0]
+        await self.wizard.refresh(interaction)
+
+
+class PitCrewWizardView(discord.ui.View):
+    def __init__(self, cog: "TeamsCog", owner_id: int, team: Team):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.team = team
+        self.selected_slot = CrewSlot.CREW_CHIEF
+        self.selected_member_key: str | None = self.current_member_key_for_slot(self.selected_slot) or self.first_member_key()
+        self.rebuild_items()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message("This pit crew wizard belongs to someone else.", ephemeral=True)
+        return False
+
+    def member_keys_for_slot(self, slot: CrewSlot) -> list[str]:
+        return [key for key, member in CREW_MEMBERS.items() if member.slot == slot]
+
+    def first_member_key(self) -> str | None:
+        members = self.member_keys_for_slot(self.selected_slot)
+        return members[0] if members else None
+
+    def current_member_key_for_slot(self, slot: CrewSlot) -> str | None:
+        key = self.team.crew.get(slot.value)
+        return key if key in CREW_MEMBERS else None
+
+    def rebuild_items(self) -> None:
+        self.clear_items()
+        self.add_item(CrewSlotSelect(self))
+        self.add_item(CrewMemberSelect(self))
+
+        assign_button = discord.ui.Button(label="Assign Member", style=discord.ButtonStyle.success, disabled=not self.selected_member_key)
+        assign_button.callback = self.assign_member
+        self.add_item(assign_button)
+
+        clear_button = discord.ui.Button(
+            label="Clear Position",
+            style=discord.ButtonStyle.danger,
+            disabled=not self.current_member_key_for_slot(self.selected_slot),
+        )
+        clear_button.callback = self.clear_position
+        self.add_item(clear_button)
+
+        refresh_button = discord.ui.Button(label="Refresh Sheet", style=discord.ButtonStyle.secondary)
+        refresh_button.callback = self.refresh_sheet
+        self.add_item(refresh_button)
+
+    def embed(self, has_sheet: bool) -> discord.Embed:
+        current_key = self.current_member_key_for_slot(self.selected_slot)
+        selected = CREW_MEMBERS[self.selected_member_key] if self.selected_member_key in CREW_MEMBERS else None
+        embed = discord.Embed(
+            title=f"Pit Crew Wizard: #{self.team.id} {self.team.name}",
+            description=f"{self.team.pit_crew_name} - {self.team.car_name}",
+        )
+        embed.add_field(name="Selected Position", value=self.selected_slot.value.replace("_", " ").title(), inline=True)
+        embed.add_field(name="Assigned", value=_crew_label(current_key) if current_key else "Empty", inline=True)
+        embed.add_field(name="Selected Member", value=selected.name if selected else "None", inline=True)
+        if selected:
+            mods = ", ".join(f"{key.title()} {value:+d}" for key, value in selected.modifiers.as_dict().items() if value)
+            embed.add_field(name="Selected Member Effects", value=mods or "No stat modifiers", inline=False)
+            embed.add_field(name="Crew Note", value=selected.description, inline=False)
+        crew_stats = BuildService.crew_stats(self.team)
+        crew_mods = ", ".join(f"{key.title()} {value:+d}" for key, value in crew_stats.as_dict().items() if value)
+        embed.add_field(name="Overall Crew Stats", value=crew_mods or "No crew stat modifiers yet.", inline=False)
+        if has_sheet:
+            embed.set_image(url="attachment://pit_crew_wizard.png")
+        else:
+            embed.add_field(
+                name="Image Sheet",
+                value="Install `Pillow` from requirements.txt to render the pit crew sheet image.",
+                inline=False,
+            )
+        return embed
+
+    def crew_file(self) -> discord.File | None:
+        sheet = render_crew_sheet(self.team)
+        if not sheet:
+            return None
+        return discord.File(sheet, filename="pit_crew_wizard.png")
+
+    async def reload_team(self) -> None:
+        if self.team.id is None:
+            return
+        team = await self.cog.bot.db.get_team(self.team.id)
+        if team:
+            self.team = team
+
+    async def refresh(self, interaction: discord.Interaction) -> None:
+        self.rebuild_items()
+        file = self.crew_file()
+        await interaction.response.edit_message(
+            embed=self.embed(has_sheet=bool(file)),
+            attachments=[file] if file else [],
+            view=self,
+        )
+
+    async def assign_member(self, interaction: discord.Interaction):
+        if self.team.id is None or not self.selected_member_key or self.selected_member_key not in CREW_MEMBERS:
+            await interaction.response.send_message("Choose a valid crew member first.", ephemeral=True)
+            return
+        member = CREW_MEMBERS[self.selected_member_key]
+        if member.slot != self.selected_slot:
+            await interaction.response.send_message("That crew member does not fit the selected position.", ephemeral=True)
+            return
+        crew = {**self.team.crew, self.selected_slot.value: self.selected_member_key}
+        await self.cog.bot.db.update_team_crew(self.team.id, crew)
+        await self.reload_team()
+        await self.refresh(interaction)
+
+    async def clear_position(self, interaction: discord.Interaction):
+        if self.team.id is None:
+            await interaction.response.send_message("Team is missing an ID.", ephemeral=True)
+            return
+        crew = {key: value for key, value in self.team.crew.items() if key != self.selected_slot.value}
+        await self.cog.bot.db.update_team_crew(self.team.id, crew)
+        await self.reload_team()
         await self.refresh(interaction)
 
     async def refresh_sheet(self, interaction: discord.Interaction):
@@ -794,6 +980,29 @@ class TeamsCog(commands.Cog):
 
         view = PartsWizardView(self, interaction.user.id, team)
         file = view.garage_file()
+        if file:
+            await interaction.response.send_message(
+                embed=view.embed(has_sheet=True),
+                file=file,
+                view=view,
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                embed=view.embed(has_sheet=False),
+                view=view,
+                ephemeral=True,
+            )
+
+    @app_commands.command(name="pit_crew_wizard", description="Assign pit crew members with buffs and debuffs.")
+    @app_commands.autocomplete(team_id=team_autocomplete)
+    async def pit_crew_wizard(self, interaction: discord.Interaction, team_id: int | None = None):
+        team = await self._owned_or_admin_team(interaction, team_id)
+        if not team:
+            return
+
+        view = PitCrewWizardView(self, interaction.user.id, team)
+        file = view.crew_file()
         if file:
             await interaction.response.send_message(
                 embed=view.embed(has_sheet=True),

@@ -30,6 +30,7 @@ class Embeds:
         ), inline=False)
         e.add_field(name="Effective Rod Stats", value="\n".join(f"{k.title()}: {v:+d}" for k, v in eff.as_dict().items()), inline=False)
         e.add_field(name="Parts", value=BuildService.part_summary(team), inline=False)
+        e.add_field(name="Pit Crew Loadout", value=BuildService.crew_summary(team), inline=False)
         illegal_risk = BuildService.illegal_disqualification_risk_percent(team)
         if illegal_risk:
             e.add_field(
@@ -73,10 +74,11 @@ class Embeds:
         lines = []
         for r in sorted(results, key=lambda x: x.position):
             status = "DSQ" if r.disqualified else "DNF" if r.dnf else f"+{r.points} pts"
+            start_damage = f" | start dmg {r.starting_damage}%" if r.starting_damage else ""
             lines.append(
                 f"**{r.position}. {r.team_name}** - {r.driver_name} - {status} - "
                 f"OTK {r.overtakes} | Crash {r.crashes} | Illegal {r.illegal_moves} | "
-                f"Pit {r.pit_stops} | damage {r.damage}% tyres {r.tyre_wear}% warnings {r.warnings}"
+                f"Pit {r.pit_stops} | damage {r.damage}%{start_damage} tyres {r.tyre_wear}% warnings {r.warnings}"
             )
         e.description = "\n".join(lines)
         return e

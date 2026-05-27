@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from models.enums import CarArchetype, PartSlot, EventType
+from models.enums import CarArchetype, CrewSlot, PartSlot, EventType
 from models.stats import DriverStats, CarStats
 
 @dataclass(slots=True)
@@ -11,6 +11,15 @@ class Part:
     modifiers: CarStats
     cost: int = 0
     risk_tags: tuple[str, ...] = ()
+
+@dataclass(slots=True)
+class CrewMember:
+    key: str
+    name: str
+    slot: CrewSlot
+    description: str
+    modifiers: CarStats
+    cost: int = 0
 
 @dataclass(slots=True)
 class CarDefinition:
@@ -43,6 +52,7 @@ class Team:
     stats: DriverStats
     parts: list[str] = field(default_factory=list)
     owner_user_id: int | None = None
+    crew: dict[str, str] = field(default_factory=dict)
 
 @dataclass(slots=True)
 class RaceEvent:
@@ -66,6 +76,7 @@ class RaceResult:
     disqualified: bool
     damage: int
     tyre_wear: int
+    starting_damage: int = 0
     overtakes: int = 0
     crashes: int = 0
     illegal_moves: int = 0
@@ -80,6 +91,7 @@ class RaceState:
     lap: int = 0
     total_time: float = 0.0
     damage: int = 0
+    starting_damage: int = 0
     tyre_wear: int = 0
     warnings: int = 0
     disqualified: bool = False

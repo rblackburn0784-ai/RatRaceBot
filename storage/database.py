@@ -9,6 +9,10 @@ from models.domain import Team
 from models.enums import CarArchetype
 from models.stats import DriverStats
 
+MAX_TOURNAMENT_CARRYOVER_DAMAGE = 30
+DAMAGE_CARRYOVER_DIVISOR = 4
+DNF_CARRYOVER_PENALTY = 5
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS teams (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -19,7 +23,8 @@ CREATE TABLE IF NOT EXISTS teams (
     archetype TEXT NOT NULL,
     stats_json TEXT NOT NULL,
     parts_json TEXT NOT NULL DEFAULT '[]',
-    owner_user_id INTEGER
+    owner_user_id INTEGER,
+    crew_json TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS tournaments (
@@ -45,6 +50,8 @@ CREATE TABLE IF NOT EXISTS tournament_teams (
     last_minute_wins INTEGER NOT NULL DEFAULT 0,
     pit_stops INTEGER NOT NULL DEFAULT 0,
     near_misses INTEGER NOT NULL DEFAULT 0,
+    carryover_damage INTEGER NOT NULL DEFAULT 0,
+    peak_carryover_damage INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (tournament_id, team_id)
 );
 
@@ -85,6 +92,8 @@ class Database:
         team_columns = {row["name"] for row in conn.execute("PRAGMA table_info(teams)").fetchall()}
         if "owner_user_id" not in team_columns:
             conn.execute("ALTER TABLE teams ADD COLUMN owner_user_id INTEGER")
+        if "crew_json" not in team_columns:
+            conn.execute("ALTER TABLE teams ADD COLUMN crew_json TEXT NOT NULL DEFAULT '{}'")
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_owner_user_id ON teams(owner_user_id) WHERE owner_user_id IS NOT NULL"
         )
@@ -97,6 +106,8 @@ class Database:
             "last_minute_wins": "INTEGER NOT NULL DEFAULT 0",
             "pit_stops": "INTEGER NOT NULL DEFAULT 0",
             "near_misses": "INTEGER NOT NULL DEFAULT 0",
+            "carryover_damage": "INTEGER NOT NULL DEFAULT 0",
+            "peak_carryover_damage": "INTEGER NOT NULL DEFAULT 0",
         }
         for column, definition in stat_columns.items():
             if column not in columns:
@@ -129,9 +140,10 @@ class Database:
     async def create_team(self, team: Team) -> int:
         stats_json = json.dumps(asdict(team.stats))
         parts_json = json.dumps(team.parts)
+        crew_json = json.dumps(team.crew)
         cur = await self.execute(
-            """INSERT INTO teams(name, driver_name, pit_crew_name, car_name, archetype, stats_json, parts_json, owner_user_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO teams(name, driver_name, pit_crew_name, car_name, archetype, stats_json, parts_json, owner_user_id, crew_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 team.name,
                 team.driver_name,
@@ -141,6 +153,7 @@ class Database:
                 stats_json,
                 parts_json,
                 team.owner_user_id,
+                crew_json,
             ),
         )
         return int(cur.lastrowid)
@@ -158,6 +171,7 @@ class Database:
             stats=stats,
             parts=json.loads(row["parts_json"]),
             owner_user_id=row["owner_user_id"] if "owner_user_id" in row.keys() else None,
+            crew=json.loads(row["crew_json"]) if "crew_json" in row.keys() else {},
         )
 
     async def get_team(self, team_id: int) -> Team | None:
@@ -207,6 +221,9 @@ class Database:
 
     async def update_team_parts(self, team_id: int, parts: list[str]) -> None:
         await self.execute("UPDATE teams SET parts_json=? WHERE id=?", (json.dumps(parts), team_id))
+
+    async def update_team_crew(self, team_id: int, crew: dict[str, str]) -> None:
+        await self.execute("UPDATE teams SET crew_json=? WHERE id=?", (json.dumps(crew), team_id))
 
     async def create_tournament(self, name: str) -> int:
         cur = await self.execute("INSERT INTO tournaments(name) VALUES (?)", (name,))
@@ -265,6 +282,13 @@ class Database:
         rows = await self.fetchall("SELECT team_id FROM tournament_teams WHERE tournament_id=? ORDER BY team_id", (tournament_id,))
         return [int(r["team_id"]) for r in rows]
 
+    async def tournament_carryover_damage(self, tournament_id: int) -> dict[int, int]:
+        rows = await self.fetchall(
+            "SELECT team_id, carryover_damage FROM tournament_teams WHERE tournament_id=?",
+            (tournament_id,),
+        )
+        return {int(row["team_id"]): int(row["carryover_damage"]) for row in rows}
+
     async def standings(self, tournament_id: int) -> list[sqlite3.Row]:
         return await self.fetchall(
             """
@@ -277,8 +301,17 @@ class Database:
             (tournament_id,),
         )
 
+    @staticmethod
+    def calculate_carryover_damage(result: dict) -> int:
+        final_damage = max(0, min(100, int(result.get("damage", 0))))
+        carryover = final_damage // DAMAGE_CARRYOVER_DIVISOR
+        if result.get("dnf"):
+            carryover += DNF_CARRYOVER_PENALTY
+        return min(MAX_TOURNAMENT_CARRYOVER_DAMAGE, carryover)
+
     async def apply_race_results(self, tournament_id: int, results: list[dict]) -> None:
         for r in results:
+            carryover_damage = self.calculate_carryover_damage(r)
             await self.execute(
                 """
                 UPDATE tournament_teams
@@ -294,7 +327,9 @@ class Database:
                     illegal_moves = illegal_moves + ?,
                     last_minute_wins = last_minute_wins + ?,
                     pit_stops = pit_stops + ?,
-                    near_misses = near_misses + ?
+                    near_misses = near_misses + ?,
+                    carryover_damage = ?,
+                    peak_carryover_damage = MAX(peak_carryover_damage, ?)
                 WHERE tournament_id=? AND team_id=?
                 """,
                 (
@@ -302,6 +337,7 @@ class Database:
                     r["warnings"], 1 if r["dnf"] else 0, 1 if r["disqualified"] else 0,
                     r.get("overtakes", 0), r.get("crashes", 0), r.get("illegal_moves", 0),
                     r.get("last_minute_wins", 0), r.get("pit_stops", 0), r.get("near_misses", 0),
+                    carryover_damage, carryover_damage,
                     tournament_id, r["team_id"],
                 ),
             )
