@@ -1,0 +1,98 @@
+name: Apply Rat Rod Racing Bot v0.4.1
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-update:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct verified v0.4.1 source
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path, PurePosixPath
+          import base64
+          import hashlib
+          import lzma
+          import subprocess
+
+          chunks = sorted(Path('.rr-update').glob('chunk-*.b64'))
+          if len(chunks) != 16:
+              raise SystemExit(f'Expected 16 payload chunks, found {len(chunks)}')
+          encoded = ''.join(p.read_text(encoding='utf-8') for p in chunks)
+          payload = base64.b64decode(encoded, validate=True)
+          expected_sha = '547f0b667c38e278cdace0a87f79f504f1616b36adce82d283b64de5dffb9a43'
+          actual_sha = hashlib.sha256(payload).hexdigest()
+          if actual_sha != expected_sha:
+              raise SystemExit(f'Payload checksum mismatch: {actual_sha}')
+          raw = lzma.decompress(payload)
+
+          files = {}
+          rest = raw
+          while rest:
+              try:
+                  name_b, rest = rest.split(b'\0', 1)
+                  size_b, rest = rest.split(b'\0', 1)
+              except ValueError as exc:
+                  raise SystemExit('Malformed source payload header') from exc
+              size = int(size_b)
+              data, rest = rest[:size], rest[size:]
+              if len(data) != size:
+                  raise SystemExit(f'Truncated payload entry: {name_b!r}')
+              name = name_b.decode('utf-8')
+              posix = PurePosixPath(name)
+              if posix.is_absolute() or '..' in posix.parts or not name:
+                  raise SystemExit(f'Unsafe payload path: {name!r}')
+              if name in files:
+                  raise SystemExit(f'Duplicate payload path: {name}')
+              files[name] = data
+
+          if len(files) != 49:
+              raise SystemExit(f'Expected 49 source files, found {len(files)}')
+          if files.get('VERSION.txt', b'').splitlines()[:1] != [b'Rat Rod Racing Bot v0.4.1 Stabilisation']:
+              raise SystemExit('VERSION.txt sanity check failed')
+
+          tracked_raw = subprocess.check_output(['git', 'ls-files', '-z'])
+          tracked = [p.decode('utf-8') for p in tracked_raw.split(b'\0') if p]
+          wanted = set(files)
+          for name in tracked:
+              if name not in wanted:
+                  p = Path(name)
+                  if p.exists() or p.is_symlink():
+                      p.unlink()
+
+          for name, data in files.items():
+              p = Path(name)
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_bytes(data)
+
+          for d in [Path('.rr-update'), Path('.github/workflows'), Path('.github')]:
+              try:
+                  d.rmdir()
+              except OSError:
+                  pass
+          PY
+
+      - name: Compile source
+        run: python -m compileall -q main.py config.py cogs services storage models data
+
+      - name: Commit clean source refresh
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Rat Rod Racing Bot v0.4.1 Stabilisation"
+          git push origin HEAD:main
