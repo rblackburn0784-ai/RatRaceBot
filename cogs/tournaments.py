@@ -12,11 +12,18 @@ TRACK_CHOICES = [
     for key, track in list(TRACKS.items())[:25]
 ]
 from services.access import deny_admin_only, is_admin
-from services.formatting import Embeds
+from services.audit import audit_log
 from services.media import MediaRegistry
+from services.preflight import race_preflight_embed
+from services.predictions import PredictionView
 from services.race_engine import RaceEngine
+from services.race_report import send_race_report
+from services.race_snapshot import build_replay_snapshot
+from services.scrutineering import scrutineering_embed
+from services.story import season_history_lines
 from services.streamer import RaceStreamer
 from services.team_ids import parse_team_ids_csv
+from services.views import ConfirmView, PaginatedTextView
 
 
 TOURNAMENT_LENGTHS = {
@@ -24,6 +31,23 @@ TOURNAMENT_LENGTHS = {
     "medium": ("Medium", 7),
     "short": ("Short", 5),
 }
+
+TOURNAMENT_AWARDS = (
+    ("overtakes", "Overtakes", "🏁"),
+    ("crashes", "Crashes", "💥"),
+    ("illegal_moves", "Illegal Moves", "🚨"),
+    ("last_minute_wins", "Last-Minute Wins", "⏱️"),
+    ("near_misses", "Near Misses", "😮"),
+    ("pit_stops", "Pit Stops", "🔧"),
+    ("carryover_damage", "Carryover Damage", "🩹"),
+    ("peak_carryover_damage", "Peak Damage", "🔥"),
+)
+
+PODIUM_MEDALS = (
+    ("🥇", "Gold Medal"),
+    ("🥈", "Silver Medal"),
+    ("🥉", "Bronze Medal"),
+)
 
 
 def random_tournament_tracks(track_count: int) -> list[str]:
@@ -51,6 +75,18 @@ def _leader_lines(rows, stat_key: str, label: str, limit: int = 5) -> str:
     return "\n".join(lines) if lines else "No stats yet."
 
 
+def _award_line(rows, stat_key: str, label: str, emoji: str) -> str:
+    leaders = sorted(
+        rows,
+        key=lambda row: (-int(row[stat_key]), -int(row["points"]), str(row["name"])),
+    )
+    if not leaders or int(leaders[0][stat_key]) <= 0:
+        return f"{emoji} **{label}:** No award this time."
+
+    winner = leaders[0]
+    return f"{emoji} **{label}:** {winner['name']} - {winner[stat_key]}"
+
+
 def tournament_stats_embed(tournament, rows) -> discord.Embed:
     embed = discord.Embed(title=f"Tournament Stats: {tournament['name']}")
     standings = [
@@ -66,6 +102,42 @@ def tournament_stats_embed(tournament, rows) -> discord.Embed:
     embed.add_field(name="Pit Stops", value=_leader_lines(rows, "pit_stops", "stops"), inline=True)
     embed.add_field(name="Carryover Damage", value=_leader_lines(rows, "carryover_damage", "damage"), inline=True)
     embed.add_field(name="Peak Damage", value=_leader_lines(rows, "peak_carryover_damage", "peak"), inline=True)
+    return embed
+
+
+def tournament_final_embed(tournament, rows) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"Final Results: {tournament['name']}",
+        description="The tournament is complete. Here is the final podium and chaos board.",
+    )
+    podium_lines = []
+    for index, row in enumerate(rows[:3], start=1):
+        medal, medal_label = PODIUM_MEDALS[index - 1]
+        podium_lines.append(
+            f"{medal} **{medal_label}** - **{row['name']}** ({row['driver_name']}) - {row['points']} pts"
+        )
+    embed.add_field(
+        name="Top 3 Racers",
+        value="\n".join(podium_lines) if podium_lines else "No racers finished.",
+        inline=False,
+    )
+
+    placement_lines = [
+        f"**{index}.** {row['name']} - {row['points']} pts"
+        for index, row in enumerate(rows[3:10], start=4)
+    ]
+    embed.add_field(
+        name="4th-10th Place",
+        value="\n".join(placement_lines) if placement_lines else "No other racers placed.",
+        inline=False,
+    )
+
+    award_lines = [
+        _award_line(rows, stat_key, label, emoji)
+        for stat_key, label, emoji in TOURNAMENT_AWARDS
+    ]
+    embed.add_field(name="Tournament Awards", value="\n".join(award_lines), inline=False)
+    embed.set_footer(text="Final tournament report")
     return embed
 
 
@@ -260,15 +332,30 @@ class TournamentsCog(commands.Cog):
         await deny_admin_only(interaction)
         return False
 
-    async def _run_tournament_race(
+    async def _send_private(self, interaction: discord.Interaction, message: str) -> None:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
+    async def send_tournament_preflight(
         self,
         interaction: discord.Interaction,
         tournament_id: int,
         track_key: str,
         team_ids: list[int],
         seed: str | None = None,
+        *,
         title_prefix: str = "Tournament Race",
+        post_final_awards: bool = False,
     ) -> None:
+        tournament = await self.bot.db.get_tournament(tournament_id)
+        if not tournament:
+            await self._send_private(interaction, "Tournament not found.")
+            return
+        if tournament["status"] != "open":
+            await self._send_private(interaction, "That tournament is closed and cannot run more races.")
+            return
         teams = []
         tournament_ids = set(await self.bot.db.tournament_team_ids(tournament_id))
         for team_id in team_ids[:10]:
@@ -278,20 +365,147 @@ class TournamentsCog(commands.Cog):
             if team:
                 teams.append(team)
         if len(teams) < 2:
-            await interaction.response.send_message("I need at least 2 valid tournament teams, ideally 10.", ephemeral=True)
+            await self._send_private(interaction, "I need at least 2 valid tournament teams, ideally 10.")
+            return
+        carryover_damage = await self.bot.db.tournament_carryover_damage(tournament_id)
+        engine = RaceEngine(track_key, teams, seed, initial_damage_by_team_id=carryover_damage)
+        seed = engine.seed
+        embed = race_preflight_embed(
+            teams,
+            TRACKS[track_key].name,
+            engine.weather,
+            title=f"Confirm {title_prefix}",
+            seed=seed,
+            carryover_damage=carryover_damage,
+        )
+
+        async def run(confirm_interaction: discord.Interaction):
+            await audit_log(self.bot, "Tournament Race Started", f"Tournament #{tournament_id} at {TRACKS[track_key].name} seed {seed}", confirm_interaction.user)
+            await confirm_interaction.response.edit_message(content="Tournament race confirmed. Posting to channel now.", embed=None, view=None)
+            await self._run_tournament_race(
+                confirm_interaction,
+                tournament_id,
+                track_key,
+                team_ids,
+                seed,
+                title_prefix=title_prefix,
+                post_final_awards=post_final_awards,
+            )
+
+        view = ConfirmView(interaction.user.id, "Start Tournament Race", run)
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    async def _run_tournament_race(
+        self,
+        interaction: discord.Interaction,
+        tournament_id: int,
+        track_key: str,
+        team_ids: list[int],
+        seed: str | None = None,
+        title_prefix: str = "Tournament Race",
+        post_final_awards: bool = False,
+    ) -> None:
+        tournament = await self.bot.db.get_tournament(tournament_id)
+        if not tournament or tournament["status"] != "open":
+            await self._send_private(interaction, "That tournament is closed or no longer exists.")
+            return
+
+        teams = []
+        tournament_ids = set(await self.bot.db.tournament_team_ids(tournament_id))
+        for team_id in team_ids[:10]:
+            if team_id not in tournament_ids:
+                continue
+            team = await self.bot.db.get_team(team_id)
+            if team:
+                teams.append(team)
+        if len(teams) < 2:
+            await self._send_private(interaction, "I need at least 2 valid tournament teams, ideally 10.")
             return
 
         carryover_damage = await self.bot.db.tournament_carryover_damage(tournament_id)
         damaged_teams = [team for team in teams if carryover_damage.get(team.id or 0, 0) > 0]
         damage_note = f" {len(damaged_teams)} team(s) are carrying repaired damage." if damaged_teams else ""
-        await interaction.response.send_message(f"Tournament race started: **{TRACKS[track_key].name}** with {len(teams)} teams.{damage_note}")
         engine = RaceEngine(track_key, teams, seed, initial_damage_by_team_id=carryover_damage)
+        await self._send_private(interaction, "Tournament race is starting in the channel.")
+        await interaction.channel.send(
+            f"Tournament race started: **{TRACKS[track_key].name}** with {len(teams)} teams. "
+            f"Weather: **{engine.weather.name}**.{damage_note}"
+        )
+        await interaction.channel.send(
+            embed=scrutineering_embed(
+                teams,
+                title=f"Pre-Race Scrutineering: {TRACKS[track_key].name}",
+                weather=engine.weather,
+                carryover_damage=carryover_damage,
+            )
+        )
+        predictions = PredictionView(teams)
+        prediction_message = await interaction.channel.send(embed=predictions.embed(TRACKS[track_key].name), view=predictions)
+        await predictions.wait()
+        await prediction_message.edit(embed=predictions.embed(TRACKS[track_key].name), view=predictions)
+
+        # A tournament may have been closed while the prediction window was open.
+        tournament = await self.bot.db.get_tournament(tournament_id)
+        if not tournament or tournament["status"] != "open":
+            await interaction.channel.send("Tournament closed before the green flag. This race was cancelled.")
+            return
+
         events, results, used_seed = engine.run()
         result_dicts = RaceEngine.results_to_dicts(results)
-        await self.bot.db.apply_race_results(tournament_id, result_dicts)
-        race_id = await self.bot.db.save_race(tournament_id, track_key, used_seed, RaceEngine.events_to_dicts(events), result_dicts)
+        replay_data = build_replay_snapshot(
+            teams,
+            laps=engine.laps,
+            initial_damage_by_team_id=carryover_damage,
+            weather_key=engine.weather.key,
+            rng_state=engine.initial_rng_state,
+        )
+        try:
+            race_id = await self.bot.db.save_tournament_race(
+                tournament_id,
+                track_key,
+                used_seed,
+                RaceEngine.events_to_dicts(events),
+                result_dicts,
+                replay_data=replay_data,
+            )
+        except ValueError as exc:
+            await interaction.channel.send(f"Tournament race was not saved: {exc}")
+            return
+        await self.bot.db.record_race_story(result_dicts)
+        rivalry_watch = await self.bot.db.race_rivalry_watch(result_dicts)
         await RaceStreamer(self.media, self.bot.settings.race_tick_seconds).stream(interaction.channel, events)
-        await interaction.channel.send(embed=Embeds.results(results, title=f"{title_prefix} #{race_id} Results"))
+        result_title = f"{title_prefix} #{race_id} Results"
+        await send_race_report(
+            channel=interaction.channel,
+            db=self.bot.db,
+            track_key=track_key,
+            race_id=race_id,
+            teams=teams,
+            results=results,
+            events=events,
+            weather_name=engine.weather.name,
+            title=result_title,
+            predictions=predictions,
+            rivalry_watch=rivalry_watch,
+        )
+        if post_final_awards:
+            await self._post_final_awards(interaction.channel, tournament_id)
+
+    async def _post_final_awards(self, channel, tournament_id: int) -> None:
+        tournament = await self.bot.db.get_tournament(tournament_id)
+        rows = await self.bot.db.standings(tournament_id)
+        if not tournament or not rows:
+            return
+
+        message = await channel.send(embed=tournament_final_embed(tournament, rows))
+        await self.bot.db.record_season_history(tournament_id)
+        try:
+            await message.pin(reason="Final tournament results")
+        except (discord.Forbidden, discord.HTTPException):
+            await channel.send("Final results posted, but I could not pin them. Check my channel permissions.")
 
     @app_commands.command(name="tournament_create", description="Create a rat rod tournament.")
     async def tournament_create(self, interaction: discord.Interaction, name: str):
@@ -300,22 +514,27 @@ class TournamentsCog(commands.Cog):
         except Exception as e:
             await interaction.response.send_message(f"❌ {e}", ephemeral=True)
             return
-        await interaction.response.send_message(f"✅ Tournament **{name}** created as ID `{tid}`. Add 10 teams with `/tournament_add_team`, or use `/tournament_wizard` for the guided setup.")
+        await audit_log(self.bot, "Tournament Created", f"#{tid} {name}", interaction.user)
+        await interaction.response.send_message(
+            f"✅ Tournament **{name}** created as ID `{tid}`. Add 10 teams with `/tournament_add_team`, or use `/tournament_wizard` for the guided setup.",
+            ephemeral=True,
+        )
 
     @app_commands.command(name="tournament_wizard", description="Create a tournament with 10 teams and a short, medium, or long track schedule.")
     async def tournament_wizard(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         teams = await self.bot.db.list_teams()
         if len(teams) < 10:
-            await interaction.response.send_message("Create at least 10 race teams before starting a tournament wizard.", ephemeral=True)
+            await interaction.followup.send("Create at least 10 race teams before starting a tournament wizard.", ephemeral=True)
             return
 
         try:
             view = TournamentWizardView(self, interaction.user.id, teams)
         except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
 
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
 
     @app_commands.command(name="tournament_add_team", description="Add a team to a tournament.")
     async def tournament_add_team(self, interaction: discord.Interaction, tournament_id: int, team_id: int):
@@ -324,8 +543,16 @@ class TournamentsCog(commands.Cog):
         if not t or not team:
             await interaction.response.send_message("Tournament or team not found.", ephemeral=True)
             return
-        await self.bot.db.add_team_to_tournament(tournament_id, team_id)
-        await interaction.response.send_message(f"✅ Added **{team.name}** to tournament `{tournament_id}`.")
+        if t["status"] != "open":
+            await interaction.response.send_message("That tournament is closed and cannot accept teams.", ephemeral=True)
+            return
+        try:
+            await self.bot.db.add_team_to_tournament(tournament_id, team_id)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await audit_log(self.bot, "Tournament Team Added", f"Tournament #{tournament_id}: #{team_id} {team.name}", interaction.user)
+        await interaction.response.send_message(f"✅ Added **{team.name}** to tournament `{tournament_id}`.", ephemeral=True)
 
     @app_commands.command(name="tournament_standings", description="Show tournament standings.")
     async def tournament_standings(self, interaction: discord.Interaction, tournament_id: int):
@@ -340,7 +567,8 @@ class TournamentsCog(commands.Cog):
                 f"Races {r['races']} | Car Dmg {r['carryover_damage']}% | Overtakes {r['overtakes']} | "
                 f"Crashes {r['crashes']} | Illegal {r['illegal_moves']}"
             )
-        await interaction.response.send_message("\n".join(lines[:30]))
+        view = PaginatedTextView(interaction.user.id, "Tournament Standings", lines, per_page=10)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
     @app_commands.command(name="tournament_stats", description="Show the current tournament's fun stats.")
     async def tournament_stats(self, interaction: discord.Interaction, tournament_id: int | None = None):
@@ -354,7 +582,13 @@ class TournamentsCog(commands.Cog):
             await interaction.response.send_message("No tournament stats yet.", ephemeral=True)
             return
 
-        await interaction.response.send_message(embed=tournament_stats_embed(tournament, rows))
+        await interaction.response.send_message(embed=tournament_stats_embed(tournament, rows), ephemeral=True)
+
+    @app_commands.command(name="season_history", description="Show saved tournament champions and podiums.")
+    async def season_history(self, interaction: discord.Interaction):
+        rows = await self.bot.db.season_history()
+        view = PaginatedTextView(interaction.user.id, "Season History", season_history_lines(rows), per_page=8)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
     @app_commands.command(name="tournament_start_race", description="Run a tournament race. Use selected CSV IDs or next 10 in standings list.")
     @app_commands.choices(track_key=TRACK_CHOICES)
@@ -366,17 +600,23 @@ class TournamentsCog(commands.Cog):
         if not tournament:
             await interaction.response.send_message("Tournament not found.", ephemeral=True)
             return
+        if tournament["status"] != "open":
+            await interaction.response.send_message("That tournament is closed and cannot run more races.", ephemeral=True)
+            return
         if team_ids_csv:
             ids = parse_team_ids_csv(team_ids_csv)
         else:
             ids = (await self.bot.db.tournament_team_ids(tournament_id))[:10]
-        await self._run_tournament_race(interaction, tournament_id, track_key, ids, seed)
+        await self.send_tournament_preflight(interaction, tournament_id, track_key, ids, seed)
 
     @app_commands.command(name="tournament_next_race", description="Run the next race from a tournament's saved track schedule.")
     async def tournament_next_race(self, interaction: discord.Interaction, tournament_id: int, seed: str | None = None):
         tournament = await self.bot.db.get_tournament(tournament_id)
         if not tournament:
             await interaction.response.send_message("Tournament not found.", ephemeral=True)
+            return
+        if tournament["status"] != "open":
+            await interaction.response.send_message("That tournament is closed and cannot run more races.", ephemeral=True)
             return
 
         next_track = await self.bot.db.next_scheduled_track(tournament_id)
@@ -386,13 +626,15 @@ class TournamentsCog(commands.Cog):
 
         race_number, track_key = next_track
         team_ids = await self.bot.db.tournament_team_ids(tournament_id)
-        await self._run_tournament_race(
+        schedule_rows = await self.bot.db.tournament_schedule(tournament_id)
+        await self.send_tournament_preflight(
             interaction,
             tournament_id,
             track_key,
             team_ids,
             seed,
             title_prefix=f"Scheduled Race {race_number}",
+            post_final_awards=race_number == len(schedule_rows),
         )
 
     @app_commands.command(name="tournament_schedule", description="Show the saved track order for a tournament.")
@@ -409,12 +651,37 @@ class TournamentsCog(commands.Cog):
 
         track_keys = [str(row["track_key"]) for row in rows]
         completed_count = await self.bot.db.tournament_race_count(tournament_id)
-        await interaction.response.send_message(schedule_text(track_keys, completed_count))
+        await interaction.response.send_message(schedule_text(track_keys, completed_count), ephemeral=True)
 
     @app_commands.command(name="tournament_close", description="Close a tournament.")
     async def tournament_close(self, interaction: discord.Interaction, tournament_id: int):
-        await self.bot.db.close_tournament(tournament_id)
-        await interaction.response.send_message(f"Tournament `{tournament_id}` closed.")
+        tournament = await self.bot.db.get_tournament(tournament_id)
+        if not tournament:
+            await interaction.response.send_message("Tournament not found.", ephemeral=True)
+            return
+        if tournament["status"] != "open":
+            await interaction.response.send_message("That tournament is already closed.", ephemeral=True)
+            return
+
+        async def close(confirm_interaction: discord.Interaction):
+            await self.bot.db.close_tournament(tournament_id)
+            await audit_log(self.bot, "Tournament Closed", f"#{tournament_id} {tournament['name']}", confirm_interaction.user)
+            await confirm_interaction.response.edit_message(
+                content=f"Tournament `{tournament_id}` closed.",
+                embed=None,
+                view=None,
+            )
+
+        embed = discord.Embed(
+            title="Confirm Tournament Close",
+            description=f"Close **#{tournament_id} {tournament['name']}**?",
+            color=discord.Color.red(),
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=ConfirmView(interaction.user.id, "Close Tournament", close),
+            ephemeral=True,
+        )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TournamentsCog(bot))

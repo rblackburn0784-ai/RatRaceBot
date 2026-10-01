@@ -1,21 +1,25 @@
 import asyncio
-import logging
-
+import json
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from data.defaults import TRACKS
 from models.domain import Team
-from models.enums import CarArchetype
-from models.stats import DriverStats
 from services.access import deny_admin_only, is_admin
 from services.ai_teams import ai_teams
 from services.formatting import Embeds
 from services.media import MediaRegistry
+from services.predictions import PredictionView
+from services.audit import audit_log
+from services.preflight import race_preflight_embed
 from services.race_engine import RaceEngine
+from services.race_report import send_race_report
+from services.race_snapshot import build_replay_snapshot, restore_replay_snapshot
+from services.scrutineering import scrutineering_embed
 from services.streamer import RaceStreamer
 from services.team_ids import parse_team_ids_csv
+from services.views import ConfirmView, PaginatedTextView
 
 TRACK_CHOICES = [
     app_commands.Choice(name=f"{track.name} ({key})", value=key)
@@ -31,6 +35,72 @@ RACE_MODES = {
 PLAYER_LOBBY_SECONDS = 600
 MIN_PLAYER_RACERS = 4
 MAX_RACERS = 10
+
+SINGLE_RACE_AWARDS = (
+    ("overtakes", "Overtakes", "🏁"),
+    ("crashes", "Crashes", "💥"),
+    ("illegal_moves", "Illegal Moves", "🚨"),
+    ("last_minute_wins", "Last-Minute Wins", "⏱️"),
+    ("near_misses", "Near Misses", "😮"),
+    ("pit_stops", "Pit Stops", "🔧"),
+    ("damage", "Carryover Damage", "🩹"),
+    ("damage", "Peak Damage", "🔥"),
+)
+
+PODIUM_MEDALS = (
+    ("🥇", "Gold Medal"),
+    ("🥈", "Silver Medal"),
+    ("🥉", "Bronze Medal"),
+)
+
+
+def _single_race_award_line(results, stat_key: str, label: str, emoji: str) -> str:
+    leaders = sorted(
+        results,
+        key=lambda result: (-int(getattr(result, stat_key)), -int(result.points), result.team_name),
+    )
+    if not leaders or int(getattr(leaders[0], stat_key)) <= 0:
+        return f"{emoji} **{label}:** No award this time."
+
+    winner = leaders[0]
+    return f"{emoji} **{label}:** {winner.team_name} - {getattr(winner, stat_key)}"
+
+
+def single_race_final_embed(results, title: str) -> discord.Embed:
+    ordered = sorted(results, key=lambda result: result.position)
+    embed = discord.Embed(
+        title=f"Final Results: {title}",
+        description="Race complete. Here is the podium and chaos board.",
+    )
+    podium_lines = []
+    for index, result in enumerate(ordered[:3], start=1):
+        medal, medal_label = PODIUM_MEDALS[index - 1]
+        podium_lines.append(
+            f"{medal} **{medal_label}** - **{result.team_name}** ({result.driver_name}) - {result.points} pts"
+        )
+    embed.add_field(
+        name="Top 3 Racers",
+        value="\n".join(podium_lines) if podium_lines else "No racers finished.",
+        inline=False,
+    )
+
+    placement_lines = [
+        f"**{index}.** {result.team_name} - {result.points} pts"
+        for index, result in enumerate(ordered[3:10], start=4)
+    ]
+    embed.add_field(
+        name="4th-10th Place",
+        value="\n".join(placement_lines) if placement_lines else "No other racers placed.",
+        inline=False,
+    )
+
+    award_lines = [
+        _single_race_award_line(ordered, stat_key, label, emoji)
+        for stat_key, label, emoji in SINGLE_RACE_AWARDS
+    ]
+    embed.add_field(name="Race Awards", value="\n".join(award_lines), inline=False)
+    embed.set_footer(text="Single race report")
+    return embed
 
 
 class RaceTrackSelect(discord.ui.Select):
@@ -127,12 +197,12 @@ class RaceWizardView(discord.ui.View):
         if self.mode == "full_ai":
             await interaction.response.edit_message(embed=self.embed(), view=self)
             teams = [self.owner_team, *ai_teams(9, f"{interaction.id}-{self.owner_team.id}-{self.track_key}")]
-            await self.cog.run_single_race(
-                interaction.channel,
+            await self.cog.send_single_race_preflight(
+                interaction,
                 self.track_key,
-                self.laps,
                 teams,
-                title=f"{self.owner_team.name} vs AI",
+                f"{self.owner_team.name} vs AI",
+                laps=self.laps,
             )
             return
 
@@ -204,7 +274,24 @@ class PlayerRaceLobbyView(discord.ui.View):
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
     async def finish_after_delay(self) -> None:
-        await asyncio.sleep(PLAYER_LOBBY_SECONDS)
+        checkpoints = [
+            (PLAYER_LOBBY_SECONDS - 300, "5 minutes left to join the race."),
+            (PLAYER_LOBBY_SECONDS - 60, "1 minute left. Grid is nearly locked."),
+        ]
+        elapsed = 0
+        for delay, message in checkpoints:
+            wait_for = max(0, delay - elapsed)
+            if wait_for:
+                await asyncio.sleep(wait_for)
+            elapsed = delay
+            if self.finished:
+                return
+            if self.message:
+                await self.message.channel.send(message)
+
+        final_wait = max(0, PLAYER_LOBBY_SECONDS - elapsed)
+        if final_wait:
+            await asyncio.sleep(final_wait)
         await self.finish_lobby()
 
     async def finish_lobby(self) -> None:
@@ -242,21 +329,190 @@ class RacingCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.media = MediaRegistry()
+        self.race_cooldowns: dict[int, float] = {}
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         command_name = interaction.command.name if interaction.command else ""
-        if is_admin(interaction) or command_name in {"race_wizard", "race_tracks"}:
+        if is_admin(interaction) or command_name in {"race_wizard", "race_tracks", "track_cards"}:
             return True
         await deny_admin_only(interaction)
         return False
 
-    async def run_single_race(self, channel: discord.abc.Messageable, track_key: str, laps: int, teams: list[Team], title: str) -> None:
-        await channel.send(f"Race started: **{TRACKS[track_key].name}**, {laps} laps, {len(teams)} teams.")
-        engine = RaceEngine(track_key, teams, laps=laps)
+    async def run_single_race(
+        self,
+        channel: discord.abc.Messageable,
+        track_key: str,
+        laps: int,
+        teams: list[Team],
+        title: str,
+        seed: str | None = None,
+        *,
+        initial_damage_by_team_id: dict[int, int] | None = None,
+        persist: bool = True,
+        replay_source_id: int | None = None,
+        weather_key: str | None = None,
+        rng_state: tuple | None = None,
+    ) -> None:
+        initial_damage_by_team_id = initial_damage_by_team_id or {}
+        engine = RaceEngine(
+            track_key,
+            teams,
+            seed=seed,
+            laps=laps,
+            initial_damage_by_team_id=initial_damage_by_team_id,
+            weather_key=weather_key,
+            rng_state=rng_state,
+        )
+        await channel.send(
+            embed=scrutineering_embed(
+                teams,
+                title=f"Pre-Race Scrutineering: {TRACKS[track_key].name}",
+                weather=engine.weather,
+                carryover_damage=initial_damage_by_team_id,
+            )
+        )
+        predictions = PredictionView(teams)
+        prediction_message = await channel.send(embed=predictions.embed(title), view=predictions)
+        await predictions.wait()
+        await prediction_message.edit(embed=predictions.embed(title), view=predictions)
+        await channel.send(
+            f"Race started: **{TRACKS[track_key].name}**, {laps} laps, {len(teams)} teams. "
+            f"Weather: **{engine.weather.name}**."
+        )
         events, results, used_seed = engine.run()
-        race_id = await self.bot.db.save_race(None, track_key, used_seed, RaceEngine.events_to_dicts(events), RaceEngine.results_to_dicts(results))
+        result_dicts = RaceEngine.results_to_dicts(results)
+
+        if persist:
+            replay_data = build_replay_snapshot(
+                teams,
+                laps=laps,
+                initial_damage_by_team_id=initial_damage_by_team_id,
+                weather_key=engine.weather.key,
+                rng_state=engine.initial_rng_state,
+            )
+            race_id = await self.bot.db.save_race(
+                None,
+                track_key,
+                used_seed,
+                RaceEngine.events_to_dicts(events),
+                result_dicts,
+                replay_data=replay_data,
+            )
+            await self.bot.db.record_race_story(result_dicts)
+            rivalry_watch = await self.bot.db.race_rivalry_watch(result_dicts)
+        else:
+            race_id = replay_source_id or 0
+            rivalry_watch = []
+
         await RaceStreamer(self.media, self.bot.settings.race_tick_seconds).stream(channel, events)
-        await channel.send(embed=Embeds.results(results, title=f"{title} Race #{race_id} Results - {TRACKS[track_key].name}"))
+        if persist:
+            result_title = f"{title} Race #{race_id} Results - {TRACKS[track_key].name}"
+        else:
+            result_title = f"{title} Results - {TRACKS[track_key].name}"
+        await send_race_report(
+            channel=channel,
+            db=self.bot.db,
+            track_key=track_key,
+            race_id=race_id,
+            teams=teams,
+            results=results,
+            events=events,
+            weather_name=engine.weather.name,
+            title=result_title,
+            predictions=predictions,
+            rivalry_watch=rivalry_watch,
+            final_embed=single_race_final_embed(results, result_title),
+            award_rewards=persist,
+        )
+
+    async def run_demo_race(self, channel: discord.abc.Messageable, track_key: str, seed: str | None = None) -> None:
+        existing = await self.bot.db.list_teams()
+        if len(existing) < 10:
+            for team in ai_teams(10 - len(existing), f"demo-fill-{len(existing)}"):
+                try:
+                    team.id = None
+                    await self.bot.db.create_team(team)
+                except Exception:
+                    continue
+        teams = (await self.bot.db.list_teams())[:10]
+        await self.run_single_race(channel, track_key, TRACKS[track_key].laps, teams, title="Demo Race", seed=seed)
+
+    def _cooldown_remaining(self, user_id: int, seconds: int = 30) -> int:
+        now = asyncio.get_running_loop().time()
+        last = self.race_cooldowns.get(user_id, 0)
+        remaining = int(seconds - (now - last))
+        return max(0, remaining)
+
+    def _mark_cooldown(self, user_id: int) -> None:
+        self.race_cooldowns[user_id] = asyncio.get_running_loop().time()
+
+    async def send_single_race_preflight(
+        self,
+        interaction: discord.Interaction,
+        track_key: str,
+        teams: list[Team],
+        title: str,
+        *,
+        seed: str | None = None,
+        laps: int | None = None,
+        initial_damage_by_team_id: dict[int, int] | None = None,
+        persist: bool = True,
+        replay_source_id: int | None = None,
+        weather_key: str | None = None,
+        rng_state: tuple | None = None,
+    ) -> None:
+        remaining = self._cooldown_remaining(interaction.user.id)
+        if remaining:
+            message = f"Race controls are cooling down. Try again in {remaining} seconds."
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+            return
+
+        initial_damage_by_team_id = initial_damage_by_team_id or {}
+        engine = RaceEngine(
+            track_key,
+            teams,
+            seed=seed,
+            laps=laps or TRACKS[track_key].laps,
+            initial_damage_by_team_id=initial_damage_by_team_id,
+            weather_key=weather_key,
+            rng_state=rng_state,
+        )
+        seed = engine.seed
+        embed = race_preflight_embed(
+            teams,
+            TRACKS[track_key].name,
+            engine.weather,
+            title="Race Preflight",
+            seed=seed,
+            carryover_damage=initial_damage_by_team_id,
+        )
+
+        async def run(confirm_interaction: discord.Interaction):
+            self._mark_cooldown(confirm_interaction.user.id)
+            await audit_log(self.bot, "Race Started", f"{title} at {TRACKS[track_key].name} seed {seed}", confirm_interaction.user)
+            await confirm_interaction.response.edit_message(content="Race confirmed. Posting to channel now.", embed=None, view=None)
+            await self.run_single_race(
+                confirm_interaction.channel,
+                track_key,
+                laps or TRACKS[track_key].laps,
+                teams,
+                title=title,
+                seed=seed,
+                initial_damage_by_team_id=initial_damage_by_team_id,
+                persist=persist,
+                replay_source_id=replay_source_id,
+                weather_key=engine.weather.key if weather_key is not None else None,
+                rng_state=engine.initial_rng_state if rng_state is not None else None,
+            )
+
+        view = ConfirmView(interaction.user.id, "Start Race", run)
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @app_commands.command(name="race_tracks", description="List available tracks.")
     async def race_tracks(self, interaction: discord.Interaction):
@@ -289,12 +545,7 @@ class RacingCog(commands.Cog):
         if len(teams) < 2:
             await interaction.response.send_message("I need at least 2 valid teams.", ephemeral=True)
             return
-        await interaction.response.send_message(f"Race started at **{TRACKS[track_key].name}** with seed `{seed or 'auto'}`.")
-        engine = RaceEngine(track_key, teams, seed)
-        events, results, used_seed = engine.run()
-        race_id = await self.bot.db.save_race(None, track_key, used_seed, RaceEngine.events_to_dicts(events), RaceEngine.results_to_dicts(results))
-        await RaceStreamer(self.media, self.bot.settings.race_tick_seconds).stream(interaction.channel, events)
-        await interaction.channel.send(embed=Embeds.results(results, title=f"Race #{race_id} Results - {TRACKS[track_key].name}"))
+        await self.send_single_race_preflight(interaction, track_key, teams, "Quick Race", seed=seed)
 
     @app_commands.command(name="race_demo", description="Admin: create demo teams if needed and run a full 10-car demo race.")
     @app_commands.choices(track_key=TRACK_CHOICES)
@@ -303,31 +554,84 @@ class RacingCog(commands.Cog):
             await interaction.response.send_message("Unknown track. Use `/race_tracks`.", ephemeral=True)
             return
         existing = await self.bot.db.list_teams()
-        if len(existing) < 10:
-            samples = [
-                ("The Rust Saints", "Johnny Carburettor", "The Alley Cats", "Saintly Rattle", CarArchetype.COUPE_32),
-                ("Blacktop Banshees", "Mabel Moon", "Grease Choir", "Moon Howler", CarArchetype.ROADSTER_29),
-                ("County Line Devils", "Buck Harlan", "Barnstorm Crew", "Red Prayer", CarArchetype.GASSER),
-                ("Junkyard Apostles", "Sal Vex", "Scrap Chapel", "Tin Sermon", CarArchetype.TRUCK_50),
-                ("Neon Greasers", "Ricky Switchblade", "Diner Rats", "Pink Trouble", CarArchetype.LEADSLED),
-                ("Salt Ghosts", "Eddie Vale", "Whiteout Wrenches", "Ghost Needle", CarArchetype.LAKSTER),
-                ("Chrome Undertakers", "Lana Graves", "Last Rites Pit", "Hearse Fire", CarArchetype.SEDAN),
-                ("Switchback Sinners", "Tommy Blacktop", "Cliffside Crew", "Dead Man's Bend", CarArchetype.COUPE_32),
-                ("The Primer Kings", "Hank Rattle", "Primer Pit Boys", "Grey Ghost", CarArchetype.TRUCK_50),
-                ("Rockabilly Reapers", "Rosie Riot", "The Combbacks", "Lipstick Lightning", CarArchetype.ROADSTER_29),
-            ]
-            for sample in samples:
-                try:
-                    await self.bot.db.create_team(Team(None, sample[0], sample[1], sample[2], sample[3], CarArchetype(sample[4]), DriverStats(4, 4, 4, 4, 4, 4), []))
-                except Exception as exc:
-                    logging.debug("Skipping demo team creation: %s", exc)
-        teams = (await self.bot.db.list_teams())[:10]
-        await interaction.response.send_message(f"Demo race started at **{TRACKS[track_key].name}**.")
+        teams = existing[:10] if len(existing) >= 10 else [*existing, *ai_teams(10 - len(existing), f"demo-preview-{len(existing)}")]
         engine = RaceEngine(track_key, teams)
-        events, results, used_seed = engine.run()
-        race_id = await self.bot.db.save_race(None, track_key, used_seed, RaceEngine.events_to_dicts(events), RaceEngine.results_to_dicts(results))
-        await RaceStreamer(self.media, self.bot.settings.race_tick_seconds).stream(interaction.channel, events)
-        await interaction.channel.send(embed=Embeds.results(results, title=f"Demo Race #{race_id} Results"))
+        seed = engine.seed
+        embed = race_preflight_embed(teams, TRACKS[track_key].name, engine.weather, title="Demo Race Preflight", seed=seed)
+
+        async def run(confirm_interaction: discord.Interaction):
+            self._mark_cooldown(confirm_interaction.user.id)
+            await audit_log(self.bot, "Demo Race Started", f"{TRACKS[track_key].name} seed {seed}", confirm_interaction.user)
+            await confirm_interaction.response.edit_message(content="Demo race confirmed. Posting to channel now.", embed=None, view=None)
+            await self.run_demo_race(confirm_interaction.channel, track_key, seed)
+
+        await interaction.response.send_message(
+            embed=embed,
+            view=ConfirmView(interaction.user.id, "Start Demo Race", run),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="race_replay", description="Admin: replay a saved race without changing stats or records.")
+    async def race_replay(self, interaction: discord.Interaction, race_id: int):
+        race = await self.bot.db.get_race(race_id)
+        if not race:
+            await interaction.response.send_message("Race not found.", ephemeral=True)
+            return
+
+        teams: list[Team] = []
+        laps = TRACKS[str(race["track_key"])].laps
+        initial_damage: dict[int, int] = {}
+        weather_key: str | None = None
+        rng_state: tuple | None = None
+        exact_snapshot = bool("replay_json" in race.keys() and race["replay_json"])
+
+        if exact_snapshot:
+            try:
+                teams, laps, initial_damage, weather_key, rng_state = restore_replay_snapshot(json.loads(race["replay_json"]))
+            except (TypeError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                await interaction.response.send_message(f"Saved replay snapshot is invalid: {exc}", ephemeral=True)
+                return
+        else:
+            # Legacy v0.4 races only stored team IDs and seed, so current team builds must be used.
+            results = json.loads(race["results_json"])
+            for result in results[:10]:
+                team_id = int(result.get("team_id", 0))
+                if team_id <= 0:
+                    continue
+                team = await self.bot.db.get_team(team_id)
+                if team:
+                    teams.append(team)
+
+        if len(teams) < 2:
+            await interaction.response.send_message("That race does not have enough saved teams to replay.", ephemeral=True)
+            return
+
+        replay_label = f"Replay Race #{race_id}" if exact_snapshot else f"Legacy Replay Race #{race_id}"
+        await self.send_single_race_preflight(
+            interaction,
+            str(race["track_key"]),
+            teams,
+            replay_label,
+            seed=str(race["seed"]),
+            laps=laps,
+            initial_damage_by_team_id=initial_damage,
+            persist=False,
+            replay_source_id=race_id,
+            weather_key=weather_key,
+            rng_state=rng_state,
+        )
+
+    @app_commands.command(name="track_cards", description="Show track cards with difficulty and hazards.")
+    async def track_cards(self, interaction: discord.Interaction):
+        lines = []
+        for key, track in TRACKS.items():
+            lines.append(
+                f"**{track.name}** (`{key}`)\n"
+                f"Corners {track.corner_difficulty} | Straights {track.straight_bias} | Roughness {track.surface_roughness} | Pit {track.pit_difficulty} | Hazard {track.hazard_rate}\n"
+                f"Hazards: {', '.join(track.hazard_names)}"
+            )
+        view = PaginatedTextView(interaction.user.id, "Track Cards", lines, per_page=3)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

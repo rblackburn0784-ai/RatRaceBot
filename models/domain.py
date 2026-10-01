@@ -42,6 +42,16 @@ class Track:
     hazard_names: tuple[str, ...]
 
 @dataclass(slots=True)
+class WeatherCondition:
+    key: str
+    name: str
+    description: str
+    modifiers: CarStats
+    hazard_rate_delta: int = 0
+    surface_roughness_delta: int = 0
+    pit_difficulty_delta: int = 0
+
+@dataclass(slots=True)
 class Team:
     id: int | None
     name: str
@@ -61,6 +71,9 @@ class RaceEvent:
     message: str
     media_key: str | None = None
     audio_key: str | None = None
+    actor: dict | None = None
+    target: dict | None = None
+    participants: list[dict] = field(default_factory=list)
 
 @dataclass(slots=True)
 class RaceResult:

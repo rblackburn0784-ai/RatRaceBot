@@ -1,4 +1,5 @@
 from io import BytesIO
+from pathlib import Path
 
 from data.defaults import CREW_MEMBERS
 from models.domain import Team
@@ -6,6 +7,13 @@ from models.enums import CrewSlot
 from services.builds import BuildService
 
 SHEET_SIZE = (1536, 1024)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CREW_ASSET_DIR = PROJECT_ROOT / "assets" / "crew"
+PIT_CREW_IMAGE_CANDIDATES = (
+    CREW_ASSET_DIR / "pit_crew.png",
+    CREW_ASSET_DIR / "pit_crew.jpg",
+    CREW_ASSET_DIR / "pit_crew.jpeg",
+)
 
 SLOT_LAYOUT = {
     CrewSlot.CREW_CHIEF: {
@@ -42,12 +50,13 @@ def render_crew_sheet(team: Team) -> BytesIO | None:
     except ImportError:
         return None
 
-    image = Image.new("RGB", SHEET_SIZE, (250, 250, 246))
+    image, has_custom_art = _crew_background(Image)
     draw = ImageDraw.Draw(image)
     fonts = _fonts(ImageFont)
 
-    _draw_title(draw, fonts, team)
-    _draw_crew_group(draw, fonts)
+    if not has_custom_art:
+        _draw_title(draw, fonts, team)
+        _draw_crew_group(draw, fonts)
     _draw_slots(draw, fonts, team)
     _draw_totals(draw, fonts, team)
 
@@ -55,6 +64,29 @@ def render_crew_sheet(team: Team) -> BytesIO | None:
     image.save(output, format="PNG")
     output.seek(0)
     return output
+
+
+def _crew_background(Image):
+    for path in _crew_image_candidates():
+        if not path.exists():
+            continue
+        try:
+            artwork = Image.open(path).convert("RGB")
+        except OSError:
+            continue
+
+        canvas = Image.new("RGB", SHEET_SIZE, (250, 250, 246))
+        artwork.thumbnail(SHEET_SIZE, Image.Resampling.LANCZOS)
+        x = (SHEET_SIZE[0] - artwork.width) // 2
+        y = (SHEET_SIZE[1] - artwork.height) // 2
+        canvas.paste(artwork, (x, y))
+        return canvas, True
+
+    return Image.new("RGB", SHEET_SIZE, (250, 250, 246)), False
+
+
+def _crew_image_candidates() -> tuple[Path, ...]:
+    return PIT_CREW_IMAGE_CANDIDATES
 
 
 def _fonts(ImageFont):

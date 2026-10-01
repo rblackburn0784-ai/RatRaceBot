@@ -14,6 +14,7 @@ COGS = [
     "cogs.teams",
     "cogs.racing",
     "cogs.tournaments",
+    "cogs.menu",
 ]
 
 class RatRodBot(commands.Bot):

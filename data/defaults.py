@@ -1,4 +1,4 @@
-from models.domain import CarDefinition, CrewMember, Part, Track
+from models.domain import CarDefinition, CrewMember, Part, Track, WeatherCondition
 from models.enums import CarArchetype, CrewSlot, PartSlot
 from models.stats import CarStats
 
@@ -144,6 +144,55 @@ CREW_MEMBERS: dict[str, CrewMember] = {
     "spotter_nora_neon": CrewMember("spotter_nora_neon", "Nora Neon", CrewSlot.SPOTTER, "Brilliant night eyes and smooth calls, less help in heavy contact.", CarStats(handling=1, reliability=2, durability=-1), 430),
     "spotter_larry_loudspeaker": CrewMember("spotter_larry_loudspeaker", "Larry Loudspeaker", CrewSlot.SPOTTER, "Big energy on the radio, sometimes too much chatter.", CarStats(intimidation=1, acceleration=1, pit_friendliness=1, handling=-1), 360),
     "spotter_sue_sideeye": CrewMember("spotter_sue_sideeye", "Sue Side-Eye", CrewSlot.SPOTTER, "Keeps the driver out of trouble, but calls cautious overtakes.", CarStats(reliability=2, braking=1, speed=-1), 400),
+}
+
+WEATHER_CONDITIONS: dict[str, WeatherCondition] = {
+    "clear": WeatherCondition(
+        "clear",
+        "Clear Night",
+        "Cool air, clean visibility, and no excuses.",
+        CarStats(reliability=1),
+    ),
+    "rain": WeatherCondition(
+        "rain",
+        "Hard Rain",
+        "Wet roads reward handling and punish bad brakes.",
+        CarStats(speed=-1, acceleration=-1, handling=2, braking=-1, reliability=-1),
+        hazard_rate_delta=3,
+        surface_roughness_delta=1,
+        pit_difficulty_delta=1,
+    ),
+    "fog": WeatherCondition(
+        "fog",
+        "Low Fog",
+        "Visibility drops and spotters earn their keep.",
+        CarStats(speed=-2, handling=1, braking=1, intimidation=-1),
+        hazard_rate_delta=2,
+    ),
+    "heatwave": WeatherCondition(
+        "heatwave",
+        "Heatwave",
+        "Engines cook, tyres complain, and hot builds get risky.",
+        CarStats(speed=1, heat=3, reliability=-2, pit_friendliness=-1),
+        hazard_rate_delta=1,
+        surface_roughness_delta=1,
+    ),
+    "crosswind": WeatherCondition(
+        "crosswind",
+        "Crosswind",
+        "Light cars twitch while brave drivers hunt the tow.",
+        CarStats(speed=1, handling=-2, braking=-1, reliability=1),
+        hazard_rate_delta=2,
+    ),
+    "oil_mist": WeatherCondition(
+        "oil_mist",
+        "Oil Mist",
+        "A slick haze makes every corner feel negotiated.",
+        CarStats(acceleration=-1, handling=-1, braking=-2, intimidation=1),
+        hazard_rate_delta=4,
+        surface_roughness_delta=1,
+        pit_difficulty_delta=1,
+    ),
 }
 
 TRACKS: dict[str, Track] = {

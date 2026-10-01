@@ -70,6 +70,9 @@ class MediaRegistry:
             "finish_line", "lap_leader"
         }
         first_two = "_".join(parts[:2])
+        if first_two == "lap_save":
+            # Near-miss saves share the minor-damage visual when dedicated art is absent.
+            return ["damage_minor"]
         if first_two in two_word_bases:
             return [first_two]
         return [parts[0]]

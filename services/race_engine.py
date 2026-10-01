@@ -3,10 +3,11 @@ import re
 import time
 from dataclasses import asdict
 
-from data.defaults import POINTS_BY_POSITION, TRACKS
+from data.defaults import POINTS_BY_POSITION, TRACKS, WEATHER_CONDITIONS
 from models.domain import RaceEvent, RaceResult, RaceState, Team
 from models.enums import EventType
 from services.builds import BuildService
+from services.engagement import trait_modifiers
 
 CAR_COLOURS = (
     "red",
@@ -187,6 +188,8 @@ class RaceEngine:
         seed: str | None = None,
         initial_damage_by_team_id: dict[int, int] | None = None,
         laps: int | None = None,
+        weather_key: str | None = None,
+        rng_state: tuple | None = None,
     ):
         if track_key not in TRACKS:
             raise ValueError(f"Unknown track '{track_key}'.")
@@ -200,6 +203,12 @@ class RaceEngine:
         self.initial_damage_by_team_id = initial_damage_by_team_id or {}
         self.seed = seed or f"ratrod-{int(time.time())}-{random.randint(1000,9999)}"
         self.rng = random.Random(self.seed)
+        rolled_weather_key = self.rng.choice(list(WEATHER_CONDITIONS))
+        self.weather_key = weather_key if weather_key in WEATHER_CONDITIONS else rolled_weather_key
+        self.weather = WEATHER_CONDITIONS[self.weather_key]
+        if rng_state is not None:
+            self.rng.setstate(rng_state)
+        self.initial_rng_state = self.rng.getstate()
         self.events: list[RaceEvent] = []
         self.states: list[RaceState] = []
 
@@ -217,7 +226,29 @@ class RaceEngine:
     def _line(self, templates: tuple[str, ...], **values) -> str:
         return self.rng.choice(templates).format(**values)
 
-    def _comment(self, event_type: EventType, lap: int, message: str, media_key: str | None = None) -> None:
+    def _car_key(self, state: RaceState) -> str:
+        return self._safe(state.team.archetype.name)
+
+    def _event_car(self, state: RaceState) -> dict:
+        return {
+            "team_id": state.team.id or 0,
+            "team_name": state.team.name,
+            "driver_name": state.team.driver_name,
+            "car_name": state.team.car_name,
+            "car_key": self._car_key(state),
+            "colour": state.car_colour,
+        }
+
+    def _comment(
+        self,
+        event_type: EventType,
+        lap: int,
+        message: str,
+        media_key: str | None = None,
+        actor: RaceState | None = None,
+        target: RaceState | None = None,
+        participants: list[RaceState] | None = None,
+    ) -> None:
         self.events.append(
             RaceEvent(
                 event_type=event_type,
@@ -225,6 +256,9 @@ class RaceEngine:
                 message=message,
                 media_key=media_key or event_type.value,
                 audio_key=event_type.value,
+                actor=self._event_car(actor) if actor else None,
+                target=self._event_car(target) if target else None,
+                participants=[self._event_car(state) for state in participants] if participants else [],
             )
         )
 
@@ -245,7 +279,18 @@ class RaceEngine:
         return min(rivals, key=lambda s: abs(s.position - state.position))
 
     def _track_adjusted_car_stats(self, team: Team):
-        return BuildService.clamp_car_stats(BuildService.effective_car_stats(team) + self.track.modifiers)
+        return BuildService.clamp_car_stats(
+            BuildService.effective_car_stats(team) + trait_modifiers(team) + self.track.modifiers + self.weather.modifiers
+        )
+
+    def _surface_roughness(self) -> int:
+        return max(0, self.track.surface_roughness + self.weather.surface_roughness_delta)
+
+    def _hazard_rate(self) -> int:
+        return max(1, self.track.hazard_rate + self.weather.hazard_rate_delta)
+
+    def _pit_difficulty(self) -> int:
+        return max(0, self.track.pit_difficulty + self.weather.pit_difficulty_delta)
 
     def _pace_score(self, state: RaceState) -> int:
         car = self._track_adjusted_car_stats(state.team)
@@ -266,7 +311,7 @@ class RaceEngine:
             - car.heat
             - damage_penalty
             - tyre_penalty
-            - self.track.surface_roughness
+            - self._surface_roughness()
         )
 
     def _lap_time(self, state: RaceState, pace: int) -> float:
@@ -283,7 +328,7 @@ class RaceEngine:
         car = self._track_adjusted_car_stats(state.team)
         drv = state.team.stats
         chance = (
-            self.track.hazard_rate
+            self._hazard_rate()
             + max(0, state.tyre_wear - 55) // 5
             + max(0, state.damage - 45) // 5
             + max(0, car.heat)
@@ -309,6 +354,7 @@ class RaceEngine:
                         hazard=hazard,
                     ),
                     self._media_key("lap_save", state.car_colour),
+                    actor=state,
                 )
             elif save >= 12:
                 state.crashes += 1
@@ -326,6 +372,7 @@ class RaceEngine:
                         hazard=hazard,
                     ),
                     self._media_key("damage_minor", state.car_colour),
+                    actor=state,
                 )
             else:
                 state.crashes += 1
@@ -345,6 +392,7 @@ class RaceEngine:
                         damage=damage,
                     ),
                     self._media_key("damage_major", state.car_colour),
+                    actor=state,
                 )
                 if state.damage >= 100:
                     state.dnf = True
@@ -359,6 +407,7 @@ class RaceEngine:
                             car_name=state.team.car_name,
                         ),
                         self._media_key("destroyed", state.car_colour),
+                        actor=state,
                     )
 
     def _maybe_illegal_move(self, state: RaceState, lap: int) -> None:
@@ -366,7 +415,7 @@ class RaceEngine:
             return
         car = self._track_adjusted_car_stats(state.team)
         drv = state.team.stats
-        dirty_chance = max(0, drv.aggression * 3 + car.intimidation + BuildService.illegal_risk(state.team) - drv.nerve)
+        dirty_chance = max(0, drv.aggression * 3 + car.intimidation - drv.nerve)
         if self._roll(100) <= dirty_chance:
             rival = self._rival_for(state)
             rival_colour = rival.car_colour if rival else None
@@ -387,6 +436,8 @@ class RaceEngine:
                     warnings=state.warnings,
                 ),
                 self._media_key("illegal_move", state.car_colour, rival_colour),
+                actor=state,
+                target=rival,
             )
             if state.warnings >= 3:
                 state.disqualified = True
@@ -401,6 +452,7 @@ class RaceEngine:
                         car_name=state.team.car_name,
                     ),
                     self._media_key("disqualified", state.car_colour),
+                    actor=state,
                 )
 
     def _maybe_illegal_scrutineering(self, state: RaceState) -> None:
@@ -422,6 +474,7 @@ class RaceEngine:
                     risk=risk,
                 ),
                 self._media_key("disqualified", state.car_colour),
+                actor=state,
             )
 
     def _maybe_pit(self, state: RaceState, lap: int) -> None:
@@ -436,8 +489,8 @@ class RaceEngine:
         drv = state.team.stats
         state.pit_stops += 1
         pit_bonus = max(-6, min(14, (drv.mechanics + car.pit_friendliness + car.reliability) // 2))
-        pit_roll = self._roll(20) + pit_bonus - self.track.pit_difficulty
-        time_cost = 9.0 + self.track.pit_difficulty + self.rng.uniform(0, 6)
+        pit_roll = self._roll(20) + pit_bonus - self._pit_difficulty()
+        time_cost = 9.0 + self._pit_difficulty() + self.rng.uniform(0, 6)
         media_key = self._media_key("pit_stop", state.car_colour)
         if pit_roll >= 22:
             fixed = self.rng.randint(22, 38)
@@ -459,6 +512,7 @@ class RaceEngine:
                     tyres=tyres,
                 ),
                 media_key,
+                actor=state,
             )
         elif pit_roll >= 12:
             fixed = self.rng.randint(10, 24)
@@ -480,6 +534,7 @@ class RaceEngine:
                     tyres=tyres,
                 ),
                 media_key,
+                actor=state,
             )
         else:
             fixed = self.rng.randint(0, 10)
@@ -498,6 +553,7 @@ class RaceEngine:
                     fixed=fixed,
                 ),
                 media_key,
+                actor=state,
             )
 
     def _order_states(self) -> None:
@@ -538,10 +594,11 @@ class RaceEngine:
                 START_LINES,
                 count=len(self.states),
                 laps=self.laps,
-                track=self.track.name,
+                track=f"{self.track.name} under {self.weather.name}",
                 colour_lines=colour_lines,
             ),
             "start",
+            participants=self.states,
         )
 
         for state in list(self.states):
@@ -557,10 +614,10 @@ class RaceEngine:
                 state.total_time += self._lap_time(state, pace)
                 state.lap = lap
                 car = self._track_adjusted_car_stats(state.team)
-                state.tyre_wear += max(1, self.track.surface_roughness + self.rng.randint(1, 5) - car.handling // 2)
+                state.tyre_wear += max(1, self._surface_roughness() + self.rng.randint(1, 5) - car.handling // 2)
                 state.damage += max(
                     0,
-                    self.track.surface_roughness // 2
+                    self._surface_roughness() // 2
                     + self.rng.randint(0, 2)
                     + max(0, car.heat) // 4
                     - car.durability // 3,
@@ -582,6 +639,7 @@ class RaceEngine:
                             car_name=state.team.car_name,
                         ),
                         self._media_key("destroyed", state.car_colour),
+                        actor=state,
                     )
                 if state.damage >= 100 and not state.dnf:
                     state.dnf = True
@@ -596,6 +654,7 @@ class RaceEngine:
                             car_name=state.team.car_name,
                         ),
                         self._media_key("destroyed", state.car_colour),
+                        actor=state,
                     )
 
             previous = {s.team.id: s.position for s in self.states}
@@ -622,6 +681,8 @@ class RaceEngine:
                             position=s.position,
                         ),
                         self._media_key("overtake", s.car_colour, defender_colour),
+                        actor=s,
+                        target=defender if defender and defender is not s else None,
                     )
                     if lap == self.laps and s.position == 1 and old > 1:
                         s.last_minute_wins += 1
@@ -636,6 +697,7 @@ class RaceEngine:
                                 car_name=s.team.car_name,
                             ),
                             self._media_key("finish_line", s.car_colour),
+                            actor=s,
                         )
             leader = self.states[0]
             self._comment(
@@ -651,6 +713,7 @@ class RaceEngine:
                     car_name=leader.team.car_name,
                 ),
                 self._media_key("lap_leader", leader.car_colour),
+                actor=leader,
             )
 
         self._order_states()
@@ -696,6 +759,7 @@ class RaceEngine:
                 track=self.track.name,
             ),
             self._media_key("finish_line", winner.car_colour),
+            actor=winner,
         )
         self._comment(
             EventType.PODIUM,
@@ -707,6 +771,7 @@ class RaceEngine:
                 third=podium[2].team_name if len(podium) > 2 else "-",
             ),
             self._media_key("podium", winner.car_colour, second_colour, third_colour),
+            participants=podium_states,
         )
         return self.events, results, self.seed
 

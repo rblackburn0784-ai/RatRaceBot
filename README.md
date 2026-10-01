@@ -22,7 +22,8 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - Media hooks for GIFs and audio clips you create yourself.
 - SQLite persistence.
 - Discord ownership controls: admins can use all commands, while regular drivers can create one linked team and manage only their own team/parts wizards.
-- Deterministic race seed saved for replay/debugging.
+- Deterministic race seed plus full build/laps/damage replay snapshot saved for new races.
+- `/race_replay` is non-destructive: it does not duplicate career stats, XP, achievements, sponsors, fatigue, or track records.
 
 ## Install
 
@@ -38,6 +39,9 @@ Create `.env`:
 DISCORD_BOT_TOKEN=your_token_here
 GUILD_ID=optional_test_server_id
 RACE_TICK_SECONDS=2.0
+DATABASE_PATH=rat_rod_racing.sqlite3
+ADMIN_ROLE_IDS=optional_role_id,optional_second_role_id
+AUDIT_LOG_CHANNEL_ID=optional_admin_log_channel_id
 ```
 
 Run:
@@ -49,21 +53,43 @@ python main.py
 ## Commands
 
 ### Teams
+- `/menu` — open the private button menu. New players see a Start Here menu until they create a team.
+- `/status` — show your current team/race dashboard.
 - `/team_wizard` — create your one linked team with a guided setup flow.
 - `/team_edit_wizard` — edit your team names, car, and stats unless the team is in an open tournament.
 - `/parts_wizard` — install and remove parts on your own rod with a visual garage sheet. Parts can still be changed during tournaments.
 - `/pit_crew_wizard` — assign pit crew members with buffs/debuffs and a visual crew sheet.
+- `/my_team` — show your garage summary, risk, reputation, next setup jobs, and quick buttons for common team tools.
+- `/scrutineering` — inspect your team's illegal-part, heat, reliability, and race-readiness risks.
+- `/team_progress` — show cosmetic XP, title, traits, achievements, sponsors, and fatigue.
+- `/team_title` — choose an unlocked cosmetic title for your team.
+- `/sponsor_offers` — show recent cosmetic/story sponsor offers with accept/reject buttons.
+- `/hall_of_fame` — show champions, record holders, and legendary rivalries.
 - `/team_create` — admin-only team creation.
 - `/team_list` — admin-only team list.
 - `/team_sheet` — admin-only team sheet lookup.
+- `/team_reputation` — show your team's earned racing reputation.
+- `/team_rivalries` — show your team's hottest rivalries.
+- `/team_delete` — admin-only delete for teams that are not in an open tournament.
 - `/team_add_part` — admin-only direct part install.
 - `/team_remove_part` — admin-only direct part removal.
 
 ### Racing
 - `/race_tracks` — list tracks.
+- `/track_cards` — browse track cards with style and difficulty details.
 - `/race_wizard` — start a single race as a regular driver.
 - `/race_quick` — admin-only race from selected team IDs.
 - `/race_demo` — admin-only auto-created 10-car demo race.
+- `/race_replay` — admin-only non-destructive replay/debug helper using exact saved snapshots for v0.4.1+ races (legacy seed replay for older races).
+- Single races — post a final podium, placements, and stat awards report without pinning it.
+- Admin race starts now show a private preflight check and confirmation before posting publicly.
+- Every race condenses the post-race recap, standings, awards, hype, predictions, rivalries, achievements, sponsors, and records into one Blacktop Gazette PNG when Pillow is installed.
+- Every race posts automatic pre-race scrutineering before the race stream starts.
+- Every race opens a short pre-race winner prediction window.
+- Every race can award cosmetic XP, achievements, sponsor offers, fatigue flags, interviews, hype ratings, and track records.
+- Player race lobbies post countdown reminders at 5 minutes and 1 minute.
+- Races now roll random weather that changes car performance and race risk.
+- `/track_records` — show fastest, wildest, and most chaotic marks by track.
 
 ### Tournaments
 - `/tournament_wizard` — create a tournament with 10 teams and a short, medium, or long track schedule.
@@ -74,22 +100,32 @@ python main.py
 - `/tournament_schedule` — show the saved tournament track order.
 - `/tournament_standings` — show points table.
 - `/tournament_stats` — show current tournament points and fun stat leaders.
+- `/season_history` — show completed tournament champions and podiums.
+- Final scheduled race — posts and pins a final podium, placements, and stat awards report.
 - `/tournament_close` — close tournament.
 
 ### Admin
 - `/ratbot_init` — initialise database.
 - `/media_list` — list media keys.
 - `/parts_catalogue` — list available rod parts and modifiers.
+- `/admin_panel` — visual button panel for admin-only tools, selectors, race preflights, and guarded actions.
+- `/ai_personalize_saved` — upgrade saved demo/AI teams with personalities, parts, and crew.
+- `/backup_database` — create a timestamped SQLite backup in `backups/`.
+- `/version` — show the current bot changelog/version note.
 
 ## Discord Access Rules
 
 - Discord users with Administrator permission can use every command.
-- Regular drivers can only use `/team_wizard`, `/team_edit_wizard`, `/parts_wizard`, `/pit_crew_wizard`, `/race_tracks`, and `/race_wizard`.
+- Role IDs listed in `ADMIN_ROLE_IDS` can also use admin commands.
+- If `AUDIT_LOG_CHANNEL_ID` is set, key admin actions are logged there.
+- Regular drivers can only use `/menu`, `/status`, `/team_wizard`, `/team_edit_wizard`, `/parts_wizard`, `/pit_crew_wizard`, `/my_team`, `/scrutineering`, `/team_reputation`, `/team_rivalries`, `/team_progress`, `/team_title`, `/sponsor_offers`, `/track_records`, `/race_tracks`, `/track_cards`, and `/race_wizard`.
 - Regular drivers can create one team, linked to their Discord user ID.
 - Regular drivers can only edit their own linked team.
 - Team profile edits are locked while that team is in an open tournament, but parts are still editable.
 - Pit crew loadouts are also editable during tournaments.
 - Tournaments and direct/admin race commands remain admin-only.
+- Team reputation and rivalries update automatically after saved races.
+- AI teams have racing personalities such as Reckless, Defensive, Pit-Focused, Showboat, Reliable, and Glass Cannon.
 
 ## Single Race Wizard
 
@@ -108,6 +144,20 @@ Put car artwork for the parts wizard into `assets/cars`. The bot looks for eithe
 - `roadster_29.png`
 - `1929_barebones_roadster.png`
 
+Put the pit crew wizard artwork at `assets/crew/pit_crew.png`. If that file is missing or cannot be opened, the bot falls back to the drawn crew sheet.
+
+Put the race newspaper artwork at `assets/newspaper/newspaper_template.png`. If that file is missing or cannot be opened, the bot falls back to the generated newspaper layout.
+
+Dynamic race event GIFs are built on the fly when Pillow is installed. Put 3 PNG backgrounds for each event in `assets/track`, using names like:
+
+- `Start1.png`, `Start2.png`, `Start3.png`
+- `Overtake1.png`, `Overtake2.png`, `Overtake3.png`
+- `Minor Damage1.png`, `Major Damage1.png`, `Pitstop1.png`
+- `Illegal1.png`, `Disqualified1.png`, `Destroyed1.png`
+- `LapLeader1.png`, `Finish1.png`, `Podium1.png`
+
+Put transparent car sprites in `assets/cars` as `{colour}_{model}.png`, for example `red_coupe_32.png`, `blue_gasser.png`, `silver_lakster.png`, or `green_truck_50.png`. The race engine assigns each racer a colour at the start and uses their selected car model for generated 5-second event GIFs.
+
 Example keys used by the race engine:
 
 - `start`
@@ -124,4 +174,4 @@ The bot will send GIFs where available. Audio support is left as a hook: the cod
 
 ## Notes
 
-This is a strong v1 foundation. The engine is intentionally readable, tunable, and deterministic. Balance values live in `data/defaults.py`.
+Current code version: **v0.4.1 Stabilisation**. The engine is intentionally readable, tunable, and deterministic. Balance values live in `data/defaults.py`. See `UPGRADE_v0.4.1.md` for upgrade/security notes.

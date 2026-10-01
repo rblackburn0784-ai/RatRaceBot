@@ -1,0 +1,4 @@
+Rat Rod Racing Bot v0.4.1 Stabilisation
+Release date: 2026-10-01
+
+See UPGRADE_v0.4.1.md before replacing an existing installation.

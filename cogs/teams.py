@@ -4,18 +4,37 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from data.defaults import CAR_DEFINITIONS, CREW_MEMBERS, PARTS
+from data.defaults import CAR_DEFINITIONS, CREW_MEMBERS, PARTS, TRACKS
 from models.domain import Team
 from models.enums import CarArchetype, CrewSlot, PartSlot
 from models.stats import DriverStats
 from services.access import deny_admin_only, is_admin
+from services.audit import audit_log
 from services.builds import BuildService, ILLEGAL_PART_DISQUALIFICATION_RISK
 from services.crew_sheet import render_crew_sheet
+from services.engagement import available_titles_for_level, level_for_xp, progress_embed, sponsor_offers_embed, track_records_embed
 from services.formatting import Embeds
 from services.garage_sheet import render_parts_sheet
+from services.scrutineering import scrutineering_embed
+from services.story import garage_summary_embed, hall_of_fame_embed, reputation_embed, rivalries_embed
+from services.team_sheet import render_team_sheet
+from services.views import ConfirmView, PaginatedTextView
 
 
 STAT_CHOICES = [app_commands.Choice(name=str(i), value=i) for i in range(1, 9)]
+TRACK_CHOICES = [
+    app_commands.Choice(name=f"{track.name} ({key})", value=key)
+    for key, track in list(TRACKS.items())[:25]
+]
+
+DRIVER_STAT_LABELS = (
+    ("Nerve", "nerve"),
+    ("Handling", "handling"),
+    ("Aggression", "aggression"),
+    ("Mechanics", "mechanics"),
+    ("Reflexes", "reflexes"),
+    ("Showmanship", "showmanship"),
+)
 
 
 def _shorten(value: str, limit: int = 100) -> str:
@@ -41,6 +60,50 @@ def _crew_label(key: str) -> str:
 
 def _crew_description(key: str) -> str:
     return _shorten(CREW_MEMBERS[key].description)
+
+
+def _ready_marker(value: object) -> str:
+    return "Ready" if value else "Needed"
+
+
+def _driver_stats_text(stats: DriverStats | None) -> str:
+    if not stats:
+        return (
+            "Not set yet.\n"
+            "Use six numbers for: Nerve, Handling, Aggression, Mechanics, Reflexes, Showmanship.\n"
+            "Each stat can be 1-8. Total budget: 24."
+        )
+
+    lines = [
+        f"**{label}:** {getattr(stats, attr)}"
+        for label, attr in DRIVER_STAT_LABELS
+    ]
+    return "\n".join(lines[:3]) + "\n" + "\n".join(lines[3:]) + f"\n**Total:** {stats.total}/24"
+
+
+def _team_identity_text(state: "TeamWizardState") -> str:
+    return (
+        f"**Team:** {state.name or 'Not set'}\n"
+        f"**Driver:** {state.driver or 'Not set'}\n"
+        f"**Pit Crew:** {state.pit_crew or 'Not set'}\n"
+        f"**Rod:** {state.car_name or 'Not set'}"
+    )
+
+
+def _car_type_text(car_type: CarArchetype | None) -> str:
+    if not car_type:
+        return "Not selected yet."
+    definition = CAR_DEFINITIONS[car_type.value]
+    return f"**{car_type.value}**\n{definition.description}"
+
+
+def _setup_progress_text(state: "TeamWizardState") -> str:
+    details_ready = all((state.name, state.driver, state.pit_crew, state.car_name))
+    return (
+        f"Team details: **{_ready_marker(details_ready)}**\n"
+        f"Car type: **{_ready_marker(state.car_type)}**\n"
+        f"Driver stats: **{_ready_marker(state.stats)}**"
+    )
 
 
 @dataclass
@@ -131,10 +194,10 @@ class DriverStatsModal(discord.ui.Modal):
             stats = wizard.state.stats
             default = f"{stats.nerve}, {stats.handling}, {stats.aggression}, {stats.mechanics}, {stats.reflexes}, {stats.showmanship}"
         self.stats_input = discord.ui.TextInput(
-            label="N,H,A,M,R,S stats",
-            placeholder="Example: 4,4,4,4,4,4 (total max 24)",
+            label="Driver stat values",
+            placeholder="Nerve, Handling, Aggression, Mechanics, Reflexes, Showmanship. Example: 4,4,4,4,4,4",
             default=default,
-            max_length=60,
+            max_length=90,
         )
         self.add_item(self.stats_input)
 
@@ -175,30 +238,16 @@ class TeamWizardView(discord.ui.View):
 
     def embed(self) -> discord.Embed:
         state = self.state
-        embed = discord.Embed(title="Create Racing Team")
-        embed.add_field(
-            name="Team",
-            value=(
-                f"Name: **{state.name or 'Not set'}**\n"
-                f"Driver: **{state.driver or 'Not set'}**\n"
-                f"Pit Crew: **{state.pit_crew or 'Not set'}**\n"
-                f"Rod: **{state.car_name or 'Not set'}**"
-            ),
-            inline=False,
+        embed = discord.Embed(
+            title="Create Racing Team",
+            description="Build the team card your driver will take to the starting line.",
+            color=discord.Color.dark_gold(),
         )
-        embed.add_field(name="Car Type", value=state.car_type.value if state.car_type else "Not selected", inline=False)
-        if state.stats:
-            embed.add_field(
-                name="Driver Stats",
-                value=(
-                    f"Nerve {state.stats.nerve} | Handling {state.stats.handling} | Aggression {state.stats.aggression}\n"
-                    f"Mechanics {state.stats.mechanics} | Reflexes {state.stats.reflexes} | Showmanship {state.stats.showmanship}\n"
-                    f"Total: {state.stats.total}/24"
-                ),
-                inline=False,
-            )
-        else:
-            embed.add_field(name="Driver Stats", value="Not set", inline=False)
+        embed.add_field(name="Setup Progress", value=_setup_progress_text(state), inline=False)
+        embed.add_field(name="Team Identity", value=_team_identity_text(state), inline=True)
+        embed.add_field(name="Car Type", value=_car_type_text(state.car_type), inline=True)
+        embed.add_field(name="Driver Stats", value=_driver_stats_text(state.stats), inline=False)
+        embed.set_footer(text="Driver stats use a 24 point budget across six full-name stats.")
         return embed
 
     async def refresh(self, interaction: discord.Interaction) -> None:
@@ -239,6 +288,7 @@ class TeamWizardView(discord.ui.View):
         except Exception as exc:
             await interaction.response.send_message(f"Team not created: {exc}", ephemeral=True)
             return
+        await audit_log(self.cog.bot, "Team Created", f"#{team_id} {team.name}", interaction.user)
 
         for item in self.children:
             item.disabled = True
@@ -278,30 +328,18 @@ class EditTeamWizardView(discord.ui.View):
 
     def embed(self, locked: bool = False) -> discord.Embed:
         state = self.state
-        embed = discord.Embed(title=f"Edit Racing Team: #{self.team.id} {self.team.name}")
+        embed = discord.Embed(
+            title=f"Edit Racing Team: #{self.team.id} {self.team.name}",
+            description="Tune the team card for future races.",
+            color=discord.Color.dark_teal(),
+        )
         if locked:
             embed.description = "Team details are locked while this team is in an open tournament. Parts can still be changed."
-        embed.add_field(
-            name="Team",
-            value=(
-                f"Name: **{state.name or 'Not set'}**\n"
-                f"Driver: **{state.driver or 'Not set'}**\n"
-                f"Pit Crew: **{state.pit_crew or 'Not set'}**\n"
-                f"Rod: **{state.car_name or 'Not set'}**"
-            ),
-            inline=False,
-        )
-        embed.add_field(name="Car Type", value=state.car_type.value if state.car_type else "Not selected", inline=False)
-        if state.stats:
-            embed.add_field(
-                name="Driver Stats",
-                value=(
-                    f"Nerve {state.stats.nerve} | Handling {state.stats.handling} | Aggression {state.stats.aggression}\n"
-                    f"Mechanics {state.stats.mechanics} | Reflexes {state.stats.reflexes} | Showmanship {state.stats.showmanship}\n"
-                    f"Total: {state.stats.total}/24"
-                ),
-                inline=False,
-            )
+        embed.add_field(name="Setup Progress", value=_setup_progress_text(state), inline=False)
+        embed.add_field(name="Team Identity", value=_team_identity_text(state), inline=True)
+        embed.add_field(name="Car Type", value=_car_type_text(state.car_type), inline=True)
+        embed.add_field(name="Driver Stats", value=_driver_stats_text(state.stats), inline=False)
+        embed.set_footer(text="Driver stats use a 24 point budget across six full-name stats.")
         return embed
 
     async def refresh(self, interaction: discord.Interaction) -> None:
@@ -740,6 +778,131 @@ class PitCrewWizardView(discord.ui.View):
         await self.refresh(interaction)
 
 
+class MyTeamActionsView(discord.ui.View):
+    def __init__(self, cog: "TeamsCog", owner_id: int, team: Team):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.team = team
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id or is_admin(interaction):
+            return True
+        await interaction.response.send_message("This garage panel belongs to another driver.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Edit Team", style=discord.ButtonStyle.primary)
+    async def edit_team(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.team.id is not None and await self.cog.bot.db.team_in_open_tournament(self.team.id):
+            await interaction.response.send_message("That team is locked while it is in an open tournament.", ephemeral=True)
+            return
+        view = EditTeamWizardView(self.cog, interaction.user.id, self.team)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+    @discord.ui.button(label="Parts Wizard", style=discord.ButtonStyle.primary)
+    async def parts_wizard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = PartsWizardView(self.cog, interaction.user.id, self.team)
+        file = view.garage_file()
+        if file:
+            await interaction.response.send_message(embed=view.embed(True), file=file, view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=view.embed(False), view=view, ephemeral=True)
+
+    @discord.ui.button(label="Pit Crew Wizard", style=discord.ButtonStyle.primary)
+    async def pit_crew_wizard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = PitCrewWizardView(self.cog, interaction.user.id, self.team)
+        file = view.crew_file()
+        if file:
+            await interaction.response.send_message(embed=view.embed(True), file=file, view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=view.embed(False), view=view, ephemeral=True)
+
+    @discord.ui.button(label="Scrutineering", style=discord.ButtonStyle.secondary)
+    async def scrutineering(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            embed=scrutineering_embed([self.team], title=f"Scrutineering Report: {self.team.name}"),
+            ephemeral=True,
+        )
+
+
+class SponsorOfferActionView(discord.ui.View):
+    def __init__(self, cog: "TeamsCog", owner_id: int, team: Team, offers):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.team = team
+        self.offer = next((offer for offer in offers if offer["status"] == "offered"), None)
+        disabled = self.offer is None
+        self.accept.disabled = disabled
+        self.reject.disabled = disabled
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id or is_admin(interaction):
+            return True
+        await interaction.response.send_message("These sponsor controls belong to another driver.", ephemeral=True)
+        return False
+
+    async def _set_status(self, interaction: discord.Interaction, status: str) -> None:
+        if not self.offer:
+            await interaction.response.send_message("No active sponsor offer to update.", ephemeral=True)
+            return
+        await self.cog.bot.db.update_sponsor_offer_status(int(self.offer["id"]), status)
+        await audit_log(
+            self.cog.bot,
+            f"Sponsor Offer {status.title()}",
+            f"#{self.team.id} {self.team.name}: {self.offer['sponsor_name']}",
+            interaction.user,
+        )
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content=f"Sponsor offer **{status}**.", view=self)
+
+    @discord.ui.button(label="Accept Latest Offer", style=discord.ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._set_status(interaction, "accepted")
+
+    @discord.ui.button(label="Reject Latest Offer", style=discord.ButtonStyle.danger)
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._set_status(interaction, "rejected")
+
+
+class AdminTeamCommandSelect(discord.ui.Select):
+    def __init__(self, parent: "AdminTeamCommandSelectView", teams):
+        self.parent = parent
+        options = [
+            discord.SelectOption(
+                label=f"#{team.id} {team.name}"[:100],
+                value=str(team.id),
+                description=f"{team.driver_name} - {team.car_name}"[:100],
+            )
+            for team in teams[:25]
+            if team.id is not None
+        ]
+        super().__init__(placeholder="Choose a team", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        team = await self.parent.cog.bot.db.get_team(int(self.values[0]))
+        if not team:
+            await interaction.response.send_message("Team not found.", ephemeral=True)
+            return
+        await self.parent.on_team(interaction, team)
+
+
+class AdminTeamCommandSelectView(discord.ui.View):
+    def __init__(self, cog: "TeamsCog", owner_id: int, teams, on_team):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.on_team = on_team
+        self.add_item(AdminTeamCommandSelect(self, teams))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id and is_admin(interaction):
+            return True
+        await interaction.response.send_message("This team selector belongs to another admin.", ephemeral=True)
+        return False
+
+
 class TeamsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -775,6 +938,17 @@ class TeamsCog(commands.Cog):
             await self._send_ephemeral(interaction, "You can only change your own team.")
             return None
         return own_team
+
+    async def _prompt_admin_team(self, interaction: discord.Interaction, on_team, message: str = "Choose a team.") -> None:
+        teams = await self.bot.db.list_teams()
+        if not teams:
+            await self._send_ephemeral(interaction, "No teams found.")
+            return
+        view = AdminTeamCommandSelectView(self, interaction.user.id, teams, on_team)
+        if interaction.response.is_done():
+            await interaction.followup.send(message, view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, view=view, ephemeral=True)
 
     # ----------------------------
     # AUTOCOMPLETE HELPERS
@@ -917,35 +1091,52 @@ class TeamsCog(commands.Cog):
         except Exception as e:
             await interaction.response.send_message(f"❌ {e}", ephemeral=True)
             return
+        await audit_log(self.bot, "Team Created", f"#{team_id} {team.name}", interaction.user)
 
         await interaction.response.send_message(
             f"✅ Created team **{name}** as ID `{team_id}`.",
             embed=Embeds.team_sheet(team),
+            ephemeral=True,
         )
 
     @app_commands.command(name="team_wizard", description="Create a racing team with a guided setup flow.")
     async def team_wizard(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         if not is_admin(interaction) and await self.bot.db.get_team_by_owner(interaction.user.id):
-            await interaction.response.send_message("You already have a team. Use `/team_edit_wizard` or `/parts_wizard` to change it.", ephemeral=True)
+            await interaction.followup.send("You already have a team. Use `/team_edit_wizard` or `/parts_wizard` to change it.", ephemeral=True)
             return
         view = TeamWizardView(self, interaction.user.id)
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
 
     @app_commands.command(name="team_edit_wizard", description="Edit your team details, car, and driver stats.")
     @app_commands.autocomplete(team_id=team_autocomplete)
     async def team_edit_wizard(self, interaction: discord.Interaction, team_id: int | None = None):
+        await interaction.response.defer(ephemeral=True)
+        if is_admin(interaction) and team_id is None:
+            async def open_selected(select_interaction: discord.Interaction, selected_team: Team):
+                if selected_team.id is not None and await self.bot.db.team_in_open_tournament(selected_team.id):
+                    await select_interaction.response.send_message(
+                        "That team is in an open tournament, so team details are locked. You can still use `/parts_wizard`.",
+                        ephemeral=True,
+                    )
+                    return
+                view = EditTeamWizardView(self, select_interaction.user.id, selected_team)
+                await select_interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+            await self._prompt_admin_team(interaction, open_selected, "Choose a team to edit.")
+            return
         team = await self._owned_or_admin_team(interaction, team_id)
         if not team:
             return
         if team.id is not None and await self.bot.db.team_in_open_tournament(team.id):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "That team is in an open tournament, so team details are locked. You can still use `/parts_wizard`.",
                 ephemeral=True,
             )
             return
 
         view = EditTeamWizardView(self, interaction.user.id, team)
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
 
     @app_commands.command(name="team_list", description="List all racing teams.")
     async def team_list(self, interaction: discord.Interaction):
@@ -956,24 +1147,298 @@ class TeamsCog(commands.Cog):
             await interaction.response.send_message("No teams yet. Use `/team_create`.", ephemeral=True)
             return
 
-        text = "\n".join(f"`{t.id}` **{t.name}** — {t.driver_name} — {t.car_name}" for t in teams)
-        await interaction.response.send_message(text[:1900])
+        lines = [f"`{t.id}` **{t.name}** — {t.driver_name} — {t.car_name}" for t in teams]
+        view = PaginatedTextView(interaction.user.id, "Team List", lines, per_page=12)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
     @app_commands.command(name="team_sheet", description="Show a full team sheet.")
     @app_commands.autocomplete(team_id=team_autocomplete)
-    async def team_sheet(self, interaction: discord.Interaction, team_id: int):
+    async def team_sheet(self, interaction: discord.Interaction, team_id: int | None = None):
         if not await self._require_admin(interaction):
+            return
+        if team_id is None:
+            async def show_selected(select_interaction: discord.Interaction, selected_team: Team):
+                sheet = render_team_sheet(selected_team)
+                if not sheet:
+                    await select_interaction.response.send_message(embed=Embeds.team_sheet(selected_team), ephemeral=True)
+                    return
+                file = discord.File(sheet, filename="team_sheet.png")
+                embed = discord.Embed(title=f"#{selected_team.id} {selected_team.name} Team Card")
+                embed.set_image(url="attachment://team_sheet.png")
+                await select_interaction.response.send_message(embed=embed, file=file, ephemeral=True)
+
+            await self._prompt_admin_team(interaction, show_selected, "Choose a team sheet to view.")
             return
         team = await self.bot.db.get_team(team_id)
         if not team:
             await interaction.response.send_message("Team not found.", ephemeral=True)
             return
 
-        await interaction.response.send_message(embed=Embeds.team_sheet(team))
+        sheet = render_team_sheet(team)
+        if not sheet:
+            await interaction.response.send_message(embed=Embeds.team_sheet(team), ephemeral=True)
+            return
+
+        file = discord.File(sheet, filename="team_sheet.png")
+        embed = discord.Embed(title=f"#{team.id} {team.name} Team Card")
+        embed.set_image(url="attachment://team_sheet.png")
+
+        illegal_risk = BuildService.illegal_disqualification_risk_percent(team)
+        if illegal_risk:
+            embed.add_field(
+                name="Illegal Parts Warning",
+                value=f"{BuildService.illegal_part_count(team)} illegal part(s): {illegal_risk}% disqualification risk per race.",
+                inline=False,
+            )
+
+        await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
+
+    @app_commands.command(name="team_reputation", description="Show a team's earned driver reputation.")
+    @app_commands.autocomplete(team_id=team_autocomplete)
+    async def team_reputation(self, interaction: discord.Interaction, team_id: int | None = None):
+        await interaction.response.defer(ephemeral=True)
+        team = await self._owned_or_admin_team(interaction, team_id)
+        if not team or team.id is None:
+            return
+
+        profile = await self.bot.db.team_profile(team.id)
+        await interaction.followup.send(embed=reputation_embed(team, profile), ephemeral=True)
+
+    @app_commands.command(name="my_team", description="Show your garage, parts, crew, risks, and next jobs.")
+    @app_commands.autocomplete(team_id=team_autocomplete)
+    async def my_team(self, interaction: discord.Interaction, team_id: int | None = None):
+        await interaction.response.defer(ephemeral=True)
+        if is_admin(interaction) and team_id is None:
+            async def show_selected(select_interaction: discord.Interaction, selected_team: Team):
+                profile = await self.bot.db.team_profile(selected_team.id)
+                rivalries = await self.bot.db.team_rivalries(selected_team.id, limit=1)
+                in_open_tournament = await self.bot.db.team_in_open_tournament(selected_team.id)
+                await select_interaction.response.send_message(
+                    embed=garage_summary_embed(selected_team, profile, rivalries, in_open_tournament),
+                    view=MyTeamActionsView(self, select_interaction.user.id, selected_team),
+                    ephemeral=True,
+                )
+
+            await self._prompt_admin_team(interaction, show_selected, "Choose a team dashboard to view.")
+            return
+        team = await self._owned_or_admin_team(interaction, team_id)
+        if not team or team.id is None:
+            return
+
+        profile = await self.bot.db.team_profile(team.id)
+        rivalries = await self.bot.db.team_rivalries(team.id, limit=1)
+        in_open_tournament = await self.bot.db.team_in_open_tournament(team.id)
+        await interaction.followup.send(
+            embed=garage_summary_embed(team, profile, rivalries, in_open_tournament),
+            view=MyTeamActionsView(self, interaction.user.id, team),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="scrutineering", description="Inspect your team's race risks before fitting parts or racing.")
+    @app_commands.autocomplete(team_id=team_autocomplete)
+    async def scrutineering(self, interaction: discord.Interaction, team_id: int | None = None):
+        await interaction.response.defer(ephemeral=True)
+        if is_admin(interaction) and team_id is None:
+            async def show_selected(select_interaction: discord.Interaction, selected_team: Team):
+                await select_interaction.response.send_message(
+                    embed=scrutineering_embed([selected_team], title=f"Scrutineering Report: {selected_team.name}"),
+                    ephemeral=True,
+                )
+
+            await self._prompt_admin_team(interaction, show_selected, "Choose a team to inspect.")
+            return
+        team = await self._owned_or_admin_team(interaction, team_id)
+        if not team:
+            return
+
+        await interaction.followup.send(
+            embed=scrutineering_embed([team], title=f"Scrutineering Report: {team.name}"),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="hall_of_fame", description="Show champions, record holders, and legendary rivalries.")
+    async def hall_of_fame(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        stat_keys = (
+            "wins",
+            "overtakes",
+            "last_minute_wins",
+            "pit_stops",
+            "near_misses",
+            "crashes",
+            "illegal_moves",
+            "peak_damage",
+        )
+        stat_leaders = {
+            key: await self.bot.db.hall_of_fame_stat_leaders(key, limit=1)
+            for key in stat_keys
+        }
+        embed = hall_of_fame_embed(
+            champions=await self.bot.db.hall_of_fame_champions(),
+            podiums=await self.bot.db.hall_of_fame_podiums(),
+            stat_leaders=stat_leaders,
+            rivalries=await self.bot.db.hall_of_fame_rivalries(),
+            recent_seasons=await self.bot.db.season_history(limit=5),
+        )
+        await interaction.followup.send(embed=embed)
+
+    @app_commands.command(name="team_rivalries", description="Show a team's hottest rivalries.")
+    @app_commands.autocomplete(team_id=team_autocomplete)
+    async def team_rivalries(self, interaction: discord.Interaction, team_id: int | None = None):
+        await interaction.response.defer(ephemeral=True)
+        if is_admin(interaction) and team_id is None:
+            async def show_selected(select_interaction: discord.Interaction, selected_team: Team):
+                rivalries = await self.bot.db.team_rivalries(selected_team.id)
+                await select_interaction.response.send_message(embed=rivalries_embed(selected_team, rivalries), ephemeral=True)
+
+            await self._prompt_admin_team(interaction, show_selected, "Choose a team for rivalries.")
+            return
+        team = await self._owned_or_admin_team(interaction, team_id)
+        if not team or team.id is None:
+            return
+
+        rivalries = await self.bot.db.team_rivalries(team.id)
+        await interaction.followup.send(embed=rivalries_embed(team, rivalries), ephemeral=True)
+
+    @app_commands.command(name="team_progress", description="Show cosmetic XP, traits, achievements, sponsors, and fatigue.")
+    @app_commands.autocomplete(team_id=team_autocomplete)
+    async def team_progress(self, interaction: discord.Interaction, team_id: int | None = None):
+        await interaction.response.defer(ephemeral=True)
+        if is_admin(interaction) and team_id is None:
+            async def show_selected(select_interaction: discord.Interaction, selected_team: Team):
+                await select_interaction.response.send_message(
+                    embed=progress_embed(
+                        selected_team,
+                        await self.bot.db.team_progress(selected_team.id),
+                        await self.bot.db.team_achievements(selected_team.id),
+                        await self.bot.db.team_sponsor_offers(selected_team.id),
+                        await self.bot.db.team_fatigue(selected_team.id),
+                    ),
+                    ephemeral=True,
+                )
+
+            await self._prompt_admin_team(interaction, show_selected, "Choose a team for progress.")
+            return
+        team = await self._owned_or_admin_team(interaction, team_id)
+        if not team or team.id is None:
+            return
+        await interaction.followup.send(
+            embed=progress_embed(
+                team,
+                await self.bot.db.team_progress(team.id),
+                await self.bot.db.team_achievements(team.id),
+                await self.bot.db.team_sponsor_offers(team.id),
+                await self.bot.db.team_fatigue(team.id),
+            ),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="team_title", description="Choose an unlocked cosmetic team title.")
+    @app_commands.autocomplete(team_id=team_autocomplete)
+    async def team_title(self, interaction: discord.Interaction, title: str, team_id: int | None = None):
+        await interaction.response.defer(ephemeral=True)
+        team = await self._owned_or_admin_team(interaction, team_id)
+        if not team or team.id is None:
+            return
+        progress = await self.bot.db.team_progress(team.id)
+        xp = int(progress["xp"]) if progress else 0
+        unlocked = available_titles_for_level(level_for_xp(xp))
+        if title not in unlocked:
+            await interaction.followup.send(
+                "That title is not unlocked yet. Available titles: " + ", ".join(unlocked),
+                ephemeral=True,
+            )
+            return
+        await self.bot.db.set_team_title(team.id, title)
+        await interaction.followup.send(f"Set **{team.name}** title to **{title}**.", ephemeral=True)
+
+    @app_commands.command(name="sponsor_offers", description="Show your team's recent sponsor offers.")
+    @app_commands.autocomplete(team_id=team_autocomplete)
+    async def sponsor_offers(self, interaction: discord.Interaction, team_id: int | None = None):
+        await interaction.response.defer(ephemeral=True)
+        if is_admin(interaction) and team_id is None:
+            async def show_selected(select_interaction: discord.Interaction, selected_team: Team):
+                offers = await self.bot.db.team_sponsor_offers(selected_team.id, limit=8)
+                await select_interaction.response.send_message(
+                    embed=sponsor_offers_embed(selected_team, offers),
+                    view=SponsorOfferActionView(self, select_interaction.user.id, selected_team, offers),
+                    ephemeral=True,
+                )
+
+            await self._prompt_admin_team(interaction, show_selected, "Choose a team for sponsor offers.")
+            return
+        team = await self._owned_or_admin_team(interaction, team_id)
+        if not team or team.id is None:
+            return
+        offers = await self.bot.db.team_sponsor_offers(team.id, limit=8)
+        await interaction.followup.send(
+            embed=sponsor_offers_embed(team, offers),
+            view=SponsorOfferActionView(self, interaction.user.id, team, offers),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="track_records", description="Show track records and chaos marks.")
+    @app_commands.choices(track_key=TRACK_CHOICES)
+    async def track_records(self, interaction: discord.Interaction, track_key: str | None = None):
+        records = await self.bot.db.track_records(track_key)
+        track_name = TRACKS[track_key].name if track_key in TRACKS else None
+        await interaction.response.send_message(embed=track_records_embed(records, track_name))
+
+    @app_commands.command(name="team_delete", description="Admin: delete a race team that is not in an open tournament.")
+    @app_commands.autocomplete(team_id=team_autocomplete)
+    async def team_delete(self, interaction: discord.Interaction, team_id: int):
+        if not await self._require_admin(interaction):
+            return
+        team = await self.bot.db.get_team(team_id)
+        if not team:
+            await interaction.response.send_message("Team not found.", ephemeral=True)
+            return
+        if await self.bot.db.team_in_open_tournament(team_id):
+            await interaction.response.send_message(
+                "That team is in an open tournament. Close the tournament before deleting it.",
+                ephemeral=True,
+            )
+            return
+
+        async def delete(confirm_interaction: discord.Interaction):
+            try:
+                await self.bot.db.delete_team(team_id)
+            except Exception as exc:
+                await confirm_interaction.response.edit_message(content=f"Team not deleted: {exc}", embed=None, view=None)
+                return
+            await audit_log(self.bot, "Team Deleted", f"#{team_id} {team.name}", confirm_interaction.user)
+            await confirm_interaction.response.edit_message(
+                content=f"Deleted team **{team.name}** (`{team_id}`).",
+                embed=None,
+                view=None,
+            )
+
+        embed = discord.Embed(
+            title="Confirm Team Delete",
+            description=f"Delete **#{team.id} {team.name}**? This cannot be undone.",
+            color=discord.Color.red(),
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=ConfirmView(interaction.user.id, "Delete Team", delete),
+            ephemeral=True,
+        )
 
     @app_commands.command(name="parts_wizard", description="Install and remove rod parts with a visual garage sheet.")
     @app_commands.autocomplete(team_id=team_autocomplete)
     async def parts_wizard(self, interaction: discord.Interaction, team_id: int | None = None):
+        await interaction.response.defer(ephemeral=True)
+        if is_admin(interaction) and team_id is None:
+            async def open_selected(select_interaction: discord.Interaction, selected_team: Team):
+                view = PartsWizardView(self, select_interaction.user.id, selected_team)
+                file = view.garage_file()
+                if file:
+                    await select_interaction.response.send_message(embed=view.embed(True), file=file, view=view, ephemeral=True)
+                else:
+                    await select_interaction.response.send_message(embed=view.embed(False), view=view, ephemeral=True)
+
+            await self._prompt_admin_team(interaction, open_selected, "Choose a team for parts wizard.")
+            return
         team = await self._owned_or_admin_team(interaction, team_id)
         if not team:
             return
@@ -981,14 +1446,14 @@ class TeamsCog(commands.Cog):
         view = PartsWizardView(self, interaction.user.id, team)
         file = view.garage_file()
         if file:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=view.embed(has_sheet=True),
                 file=file,
                 view=view,
                 ephemeral=True,
             )
         else:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=view.embed(has_sheet=False),
                 view=view,
                 ephemeral=True,
@@ -997,6 +1462,18 @@ class TeamsCog(commands.Cog):
     @app_commands.command(name="pit_crew_wizard", description="Assign pit crew members with buffs and debuffs.")
     @app_commands.autocomplete(team_id=team_autocomplete)
     async def pit_crew_wizard(self, interaction: discord.Interaction, team_id: int | None = None):
+        await interaction.response.defer(ephemeral=True)
+        if is_admin(interaction) and team_id is None:
+            async def open_selected(select_interaction: discord.Interaction, selected_team: Team):
+                view = PitCrewWizardView(self, select_interaction.user.id, selected_team)
+                file = view.crew_file()
+                if file:
+                    await select_interaction.response.send_message(embed=view.embed(True), file=file, view=view, ephemeral=True)
+                else:
+                    await select_interaction.response.send_message(embed=view.embed(False), view=view, ephemeral=True)
+
+            await self._prompt_admin_team(interaction, open_selected, "Choose a team for pit crew wizard.")
+            return
         team = await self._owned_or_admin_team(interaction, team_id)
         if not team:
             return
@@ -1004,14 +1481,14 @@ class TeamsCog(commands.Cog):
         view = PitCrewWizardView(self, interaction.user.id, team)
         file = view.crew_file()
         if file:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=view.embed(has_sheet=True),
                 file=file,
                 view=view,
                 ephemeral=True,
             )
         else:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=view.embed(has_sheet=False),
                 view=view,
                 ephemeral=True,
@@ -1042,6 +1519,7 @@ class TeamsCog(commands.Cog):
 
         team.parts.append(part_key)
         await self.bot.db.update_team_parts(team_id, team.parts)
+        await audit_log(self.bot, "Part Added", f"#{team_id} {team.name}: {new_part.name}", interaction.user)
         warning = ""
         if BuildService.is_illegal_part_key(part_key):
             risk = BuildService.illegal_disqualification_risk_percent(team)
@@ -1049,6 +1527,7 @@ class TeamsCog(commands.Cog):
         await interaction.response.send_message(
             f"✅ Fitted **{new_part.name}** to **{team.name}**.{warning}",
             embed=Embeds.team_sheet(team),
+            ephemeral=True,
         )
 
     @app_commands.command(name="team_remove_part", description="Remove a custom part from a team rod.")
@@ -1067,9 +1546,11 @@ class TeamsCog(commands.Cog):
 
         team.parts.remove(part_key)
         await self.bot.db.update_team_parts(team_id, team.parts)
+        await audit_log(self.bot, "Part Removed", f"#{team_id} {team.name}: {part_key}", interaction.user)
         await interaction.response.send_message(
             f"Removed `{part_key}` from **{team.name}**.",
             embed=Embeds.team_sheet(team),
+            ephemeral=True,
         )
 
 
