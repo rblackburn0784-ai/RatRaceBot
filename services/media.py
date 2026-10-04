@@ -49,7 +49,24 @@ class MediaRegistry:
         if not self.path.exists():
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(json.dumps(DEFAULT_REGISTRY, indent=2), encoding="utf-8")
-        self.data = json.loads(self.path.read_text(encoding="utf-8"))
+        try:
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                raise ValueError("media registry root must be an object")
+            gifs = loaded.get("gifs", {})
+            audio = loaded.get("audio", {})
+            if not isinstance(gifs, dict) or not isinstance(audio, dict):
+                raise ValueError("gifs/audio sections must be objects")
+            self.data = {
+                "gifs": {**DEFAULT_REGISTRY["gifs"], **gifs},
+                "audio": {**DEFAULT_REGISTRY["audio"], **audio},
+            }
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            # A malformed optional registry should never stop the bot loading.
+            self.data = {
+                "gifs": dict(DEFAULT_REGISTRY["gifs"]),
+                "audio": dict(DEFAULT_REGISTRY["audio"]),
+            }
 
     @staticmethod
     def _existing_path(raw: str | None) -> Path | None:

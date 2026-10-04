@@ -6,6 +6,7 @@ import discord
 from data.defaults import WEATHER_CONDITIONS
 from models.domain import RaceEvent, RaceResult, Team
 from models.enums import EventType
+from services.race_rules import is_official_finisher, official_winner
 from models.stats import CarStats
 from services.story import reputation_tags
 
@@ -90,28 +91,31 @@ def available_titles_for_level(level: int) -> list[str]:
 
 def xp_for_result(result: RaceResult | dict) -> int:
     getter = result.get if isinstance(result, dict) else lambda key, default=0: getattr(result, key, default)
+    action_xp = int(getter("overtakes", 0)) + int(getter("near_misses", 0))
+    if getter("disqualified", False):
+        return max(3, 3 + action_xp // 2)
+    if getter("dnf", False):
+        return max(5, 5 + action_xp)
     position = int(getter("position"))
-    xp = 10 + max(0, 11 - position) * 2
-    xp += int(getter("overtakes", 0))
-    xp += int(getter("near_misses", 0))
+    xp = 10 + max(0, 11 - position) * 2 + action_xp
     xp += int(getter("last_minute_wins", 0)) * 8
     xp += 8 if position == 1 else 0
-    xp -= 4 if getter("disqualified", False) else 0
     return max(3, xp)
 
 
 def achievement_candidates(result: RaceResult | dict, profile) -> list[tuple[str, str]]:
     getter = result.get if isinstance(result, dict) else lambda key, default=0: getattr(result, key, default)
     achievements = []
-    if int(getter("position")) == 1:
+    official_finisher = is_official_finisher(result)
+    if official_finisher and int(getter("position")) == 1:
         achievements.append(("first_win", "First Win"))
-    if int(getter("damage", 0)) >= 90 and not getter("dnf", False):
+    if official_finisher and int(getter("damage", 0)) >= 90:
         achievements.append(("barely_alive", "Finished On A Prayer"))
     if int(getter("overtakes", 0)) >= 6:
         achievements.append(("overtake_machine", "Overtake Machine"))
     if int(getter("illegal_moves", 0)) > 0 and not getter("disqualified", False):
         achievements.append(("illegal_and_lucky", "Illegal And Lucky"))
-    if int(getter("last_minute_wins", 0)) > 0:
+    if official_finisher and int(getter("last_minute_wins", 0)) > 0:
         achievements.append(("last_lap_thief", "Last-Lap Thief"))
     if profile and int(profile["podiums"]) >= 3:
         achievements.append(("three_podiums", "Three Podiums"))
@@ -159,16 +163,21 @@ def hype_embed(results: list[RaceResult], events: list[RaceEvent], title: str) -
 
 def newspaper_embed(results: list[RaceResult], title: str, track_name: str, weather_name: str) -> discord.Embed:
     ordered = sorted(results, key=lambda result: result.position)
-    winner = ordered[0]
+    winner = official_winner(ordered)
     mover = max(ordered, key=lambda result: (result.overtakes, result.points))
     trouble = max(ordered, key=lambda result: (result.illegal_moves + result.warnings, result.crashes))
-    headline = f"{winner.team_name} Takes {track_name}"
+    headline = f"{winner.team_name} Takes {track_name}" if winner else f"No Classified Winner At {track_name}"
     embed = discord.Embed(
         title="Blacktop Gazette",
         description=f"**{headline}**\n{title} ran under {weather_name}.",
         color=discord.Color.dark_grey(),
     )
-    embed.add_field(name="Lead Story", value=f"{winner.driver_name} brought **{winner.team_name}** home first.", inline=False)
+    lead_story = (
+        f"{winner.driver_name} brought **{winner.team_name}** home first."
+        if winner
+        else "Attrition took the whole field: no official winner or podium was awarded."
+    )
+    embed.add_field(name="Lead Story", value=lead_story, inline=False)
     embed.add_field(name="Big Move", value=f"**{mover.team_name}** made {mover.overtakes} overtakes.", inline=True)
     embed.add_field(name="Scandal Note", value=f"**{trouble.team_name}** drew {trouble.warnings} warnings and {trouble.illegal_moves} illegal moves.", inline=True)
     return embed

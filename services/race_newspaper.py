@@ -11,6 +11,7 @@ import discord
 from models.domain import RaceEvent, RaceResult
 from models.enums import EventType
 from services.engagement import hype_score
+from services.race_rules import official_winner
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -47,7 +48,9 @@ def render_race_newspaper(
         return None
 
     ordered = sorted(results, key=lambda result: result.position)
-    winner = ordered[0]
+    winner = official_winner(ordered)
+    if winner is None:
+        return None
     rewards = reward_embeds or []
 
     fonts = _fonts()
@@ -207,7 +210,9 @@ def _draw_template_report(
     reward_embeds: list[discord.Embed],
 ) -> None:
     draw = ImageDraw.Draw(image)
-    winner = ordered[0]
+    winner = official_winner(ordered)
+    if winner is None:
+        return
     template_fonts = _template_fonts()
 
     _centered_fit_shrink(
@@ -527,7 +532,11 @@ def _section(
 
 
 def _race_recap_lines(ordered: list[RaceResult], title: str, track_name: str, weather_name: str) -> list[str]:
-    winner = ordered[0]
+    winner = official_winner(ordered)
+    winner_line = (
+        f"Winner: {winner.team_name} - {winner.driver_name}"
+        if winner else "Winner: No official finisher"
+    )
     mover = max(ordered, key=lambda result: (result.overtakes, result.points, -result.position))
     hardest_hit = max(ordered, key=lambda result: (result.damage, result.crashes, result.tyre_wear))
     trouble = max(ordered, key=lambda result: (result.illegal_moves + result.warnings * 2, result.illegal_moves))
@@ -536,7 +545,7 @@ def _race_recap_lines(ordered: list[RaceResult], title: str, track_name: str, we
     return [
         title,
         f"{track_name} | Weather: {weather_name}",
-        f"Winner: {winner.team_name} - {winner.driver_name}",
+        winner_line,
         f"Biggest Mover: {mover.team_name} - {mover.overtakes} overtakes",
         f"Hardest Hit: {hardest_hit.team_name} - {hardest_hit.damage}% damage",
         f"Most Questionable: {trouble.team_name} - {trouble.illegal_moves} illegal, {trouble.warnings} warnings",
@@ -627,7 +636,8 @@ def _big_move_lines(ordered: list[RaceResult]) -> list[str]:
     mover = max(ordered, key=lambda result: (result.overtakes, result.near_misses, result.points))
     if mover.overtakes:
         return [f"{mover.team_name} made {mover.overtakes} overtakes!"]
-    return [f"{ordered[0].team_name} held firm when it mattered!"]
+    winner = official_winner(ordered)
+    return [f"{winner.team_name} held firm when it mattered!" if winner else "No car reached an official finish."]
 
 
 def _find_embed(embeds: list[discord.Embed], title: str) -> discord.Embed | None:

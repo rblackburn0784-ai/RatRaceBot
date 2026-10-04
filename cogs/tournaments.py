@@ -1,4 +1,5 @@
 import random
+import logging
 from dataclasses import dataclass, field
 
 import discord
@@ -348,6 +349,7 @@ class TournamentsCog(commands.Cog):
         *,
         title_prefix: str = "Tournament Race",
         post_final_awards: bool = False,
+        schedule_race_number: int | None = None,
     ) -> None:
         tournament = await self.bot.db.get_tournament(tournament_id)
         if not tournament:
@@ -356,16 +358,23 @@ class TournamentsCog(commands.Cog):
         if tournament["status"] != "open":
             await self._send_private(interaction, "That tournament is closed and cannot run more races.")
             return
+        try:
+            await self.bot.db.require_full_tournament_grid(tournament_id)
+        except ValueError as exc:
+            await self._send_private(interaction, str(exc))
+            return
         teams = []
         tournament_ids = set(await self.bot.db.tournament_team_ids(tournament_id))
-        for team_id in team_ids[:10]:
-            if team_id not in tournament_ids:
-                continue
+        requested_ids = [int(team_id) for team_id in team_ids]
+        if len(requested_ids) != 10 or set(requested_ids) != tournament_ids:
+            await self._send_private(interaction, "Tournament races must use all 10 entered teams exactly once.")
+            return
+        for team_id in requested_ids:
             team = await self.bot.db.get_team(team_id)
             if team:
                 teams.append(team)
-        if len(teams) < 2:
-            await self._send_private(interaction, "I need at least 2 valid tournament teams, ideally 10.")
+        if len(teams) != 10:
+            await self._send_private(interaction, "Tournament grid is incomplete; all 10 entered teams must exist.")
             return
         carryover_damage = await self.bot.db.tournament_carryover_damage(tournament_id)
         engine = RaceEngine(track_key, teams, seed, initial_damage_by_team_id=carryover_damage)
@@ -390,6 +399,7 @@ class TournamentsCog(commands.Cog):
                 seed,
                 title_prefix=title_prefix,
                 post_final_awards=post_final_awards,
+                schedule_race_number=schedule_race_number,
             )
 
         view = ConfirmView(interaction.user.id, "Start Tournament Race", run)
@@ -407,101 +417,142 @@ class TournamentsCog(commands.Cog):
         seed: str | None = None,
         title_prefix: str = "Tournament Race",
         post_final_awards: bool = False,
+        schedule_race_number: int | None = None,
     ) -> None:
         tournament = await self.bot.db.get_tournament(tournament_id)
         if not tournament or tournament["status"] != "open":
             await self._send_private(interaction, "That tournament is closed or no longer exists.")
             return
+        try:
+            await self.bot.db.require_full_tournament_grid(tournament_id)
+        except ValueError as exc:
+            await self._send_private(interaction, str(exc))
+            return
 
-        teams = []
         tournament_ids = set(await self.bot.db.tournament_team_ids(tournament_id))
-        for team_id in team_ids[:10]:
-            if team_id not in tournament_ids:
-                continue
+        requested_ids = [int(team_id) for team_id in team_ids]
+        if len(requested_ids) != 10 or set(requested_ids) != tournament_ids:
+            await self._send_private(interaction, "Tournament races must use all 10 entered teams exactly once.")
+            return
+        teams = []
+        for team_id in requested_ids:
             team = await self.bot.db.get_team(team_id)
             if team:
                 teams.append(team)
-        if len(teams) < 2:
-            await self._send_private(interaction, "I need at least 2 valid tournament teams, ideally 10.")
+        if len(teams) != 10:
+            await self._send_private(interaction, "Tournament grid is incomplete; all 10 entered teams must exist.")
             return
 
-        carryover_damage = await self.bot.db.tournament_carryover_damage(tournament_id)
-        damaged_teams = [team for team in teams if carryover_damage.get(team.id or 0, 0) > 0]
-        damage_note = f" {len(damaged_teams)} team(s) are carrying repaired damage." if damaged_teams else ""
-        engine = RaceEngine(track_key, teams, seed, initial_damage_by_team_id=carryover_damage)
-        await self._send_private(interaction, "Tournament race is starting in the channel.")
-        await interaction.channel.send(
-            f"Tournament race started: **{TRACKS[track_key].name}** with {len(teams)} teams. "
-            f"Weather: **{engine.weather.name}**.{damage_note}"
-        )
-        await interaction.channel.send(
-            embed=scrutineering_embed(
-                teams,
-                title=f"Pre-Race Scrutineering: {TRACKS[track_key].name}",
-                weather=engine.weather,
-                carryover_damage=carryover_damage,
-            )
-        )
-        predictions = PredictionView(teams)
-        prediction_message = await interaction.channel.send(embed=predictions.embed(TRACKS[track_key].name), view=predictions)
-        await predictions.wait()
-        await prediction_message.edit(embed=predictions.embed(TRACKS[track_key].name), view=predictions)
-
-        # A tournament may have been closed while the prediction window was open.
-        tournament = await self.bot.db.get_tournament(tournament_id)
-        if not tournament or tournament["status"] != "open":
-            await interaction.channel.send("Tournament closed before the green flag. This race was cancelled.")
+        reservation = await self.bot.race_activity.reserve_race(requested_ids, tournament_id=tournament_id)
+        if reservation is None:
+            await self._send_private(interaction, "Tournament race cannot start because the tournament or one of its teams is already active elsewhere.")
             return
 
-        events, results, used_seed = engine.run()
-        result_dicts = RaceEngine.results_to_dicts(results)
-        replay_data = build_replay_snapshot(
-            teams,
-            laps=engine.laps,
-            initial_damage_by_team_id=carryover_damage,
-            weather_key=engine.weather.key,
-            rng_state=engine.initial_rng_state,
-        )
         try:
-            race_id = await self.bot.db.save_tournament_race(
-                tournament_id,
-                track_key,
-                used_seed,
-                RaceEngine.events_to_dicts(events),
-                result_dicts,
-                replay_data=replay_data,
+            carryover_damage = await self.bot.db.tournament_carryover_damage(tournament_id)
+            damaged_teams = [team for team in teams if carryover_damage.get(team.id or 0, 0) > 0]
+            damage_note = f" {len(damaged_teams)} team(s) are carrying repaired damage." if damaged_teams else ""
+            engine = RaceEngine(track_key, teams, seed, initial_damage_by_team_id=carryover_damage)
+            await self._send_private(interaction, "Tournament race is starting in the channel.")
+            await interaction.channel.send(
+                f"Tournament race started: **{TRACKS[track_key].name}** with {len(teams)} teams. "
+                f"Weather: **{engine.weather.name}**.{damage_note}"
             )
-        except ValueError as exc:
-            await interaction.channel.send(f"Tournament race was not saved: {exc}")
-            return
-        await self.bot.db.record_race_story(result_dicts)
-        rivalry_watch = await self.bot.db.race_rivalry_watch(result_dicts)
-        await RaceStreamer(self.media, self.bot.settings.race_tick_seconds).stream(interaction.channel, events)
-        result_title = f"{title_prefix} #{race_id} Results"
-        await send_race_report(
-            channel=interaction.channel,
-            db=self.bot.db,
-            track_key=track_key,
-            race_id=race_id,
-            teams=teams,
-            results=results,
-            events=events,
-            weather_name=engine.weather.name,
-            title=result_title,
-            predictions=predictions,
-            rivalry_watch=rivalry_watch,
-        )
-        if post_final_awards:
-            await self._post_final_awards(interaction.channel, tournament_id)
+            await interaction.channel.send(
+                embed=scrutineering_embed(
+                    teams,
+                    title=f"Pre-Race Scrutineering: {TRACKS[track_key].name}",
+                    weather=engine.weather,
+                    carryover_damage=carryover_damage,
+                )
+            )
+            predictions = PredictionView(teams)
+            prediction_message = await interaction.channel.send(embed=predictions.embed(TRACKS[track_key].name), view=predictions)
+            await predictions.wait()
+            await prediction_message.edit(embed=predictions.embed(TRACKS[track_key].name), view=predictions)
+
+            tournament = await self.bot.db.get_tournament(tournament_id)
+            if not tournament or tournament["status"] != "open":
+                await interaction.channel.send("Tournament closed before the green flag. This race was cancelled.")
+                return
+
+            events, results, used_seed = engine.run()
+            result_dicts = RaceEngine.results_to_dicts(results)
+            replay_data = build_replay_snapshot(
+                teams,
+                laps=engine.laps,
+                initial_damage_by_team_id=carryover_damage,
+                weather_key=engine.weather.key,
+                rng_state=engine.initial_rng_state,
+            )
+            try:
+                race_id = await self.bot.db.save_tournament_race(
+                    tournament_id,
+                    track_key,
+                    used_seed,
+                    RaceEngine.events_to_dicts(events),
+                    result_dicts,
+                    replay_data=replay_data,
+                    schedule_race_number=schedule_race_number,
+                )
+            except ValueError as exc:
+                await interaction.channel.send(f"Tournament race was not saved: {exc}")
+                return
+
+            stream_error = None
+            try:
+                await RaceStreamer(self.media, self.bot.settings.race_tick_seconds).stream(interaction.channel, events)
+            except (discord.HTTPException, OSError) as exc:
+                stream_error = exc
+                logging.exception("Tournament race streaming failed for race %s", race_id)
+
+            result_title = f"{title_prefix} #{race_id} Results"
+            report_error = None
+            try:
+                await send_race_report(
+                    channel=interaction.channel,
+                    db=self.bot.db,
+                    track_key=track_key,
+                    race_id=race_id,
+                    teams=teams,
+                    results=results,
+                    events=events,
+                    weather_name=engine.weather.name,
+                    title=result_title,
+                    race_laps=engine.laps,
+                    predictions=predictions,
+                    rivalry_watch=None,
+                )
+            except (discord.HTTPException, OSError) as exc:
+                report_error = exc
+                logging.exception("Tournament race report delivery failed for race %s", race_id)
+
+            # The final scheduled result closes the championship even if Discord cannot
+            # deliver the live report. The database is the source of truth.
+            if post_final_awards:
+                try:
+                    await self._post_final_awards(interaction.channel, tournament_id)
+                except (discord.HTTPException, OSError):
+                    logging.exception("Final tournament awards could not be delivered for tournament %s", tournament_id)
+
+            if stream_error or report_error:
+                try:
+                    await interaction.channel.send("Some race presentation messages could not be posted, but the saved result and progression were completed safely.")
+                except discord.HTTPException:
+                    pass
+        finally:
+            await self.bot.race_activity.release(reservation)
 
     async def _post_final_awards(self, channel, tournament_id: int) -> None:
+        try:
+            rows = await self.bot.db.finalize_tournament(tournament_id)
+        except ValueError:
+            return
         tournament = await self.bot.db.get_tournament(tournament_id)
-        rows = await self.bot.db.standings(tournament_id)
         if not tournament or not rows:
             return
 
         message = await channel.send(embed=tournament_final_embed(tournament, rows))
-        await self.bot.db.record_season_history(tournament_id)
         try:
             await message.pin(reason="Final tournament results")
         except (discord.Forbidden, discord.HTTPException):
@@ -590,7 +641,7 @@ class TournamentsCog(commands.Cog):
         view = PaginatedTextView(interaction.user.id, "Season History", season_history_lines(rows), per_page=8)
         await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
-    @app_commands.command(name="tournament_start_race", description="Run a tournament race. Use selected CSV IDs or next 10 in standings list.")
+    @app_commands.command(name="tournament_start_race", description="Run a tournament race using all 10 entered teams.")
     @app_commands.choices(track_key=TRACK_CHOICES)
     async def tournament_start_race(self, interaction: discord.Interaction, tournament_id: int, track_key: str, team_ids_csv: str | None = None, seed: str | None = None):
         if track_key not in TRACKS:
@@ -606,7 +657,7 @@ class TournamentsCog(commands.Cog):
         if team_ids_csv:
             ids = parse_team_ids_csv(team_ids_csv)
         else:
-            ids = (await self.bot.db.tournament_team_ids(tournament_id))[:10]
+            ids = await self.bot.db.tournament_team_ids(tournament_id)
         await self.send_tournament_preflight(interaction, tournament_id, track_key, ids, seed)
 
     @app_commands.command(name="tournament_next_race", description="Run the next race from a tournament's saved track schedule.")
@@ -635,6 +686,7 @@ class TournamentsCog(commands.Cog):
             seed,
             title_prefix=f"Scheduled Race {race_number}",
             post_final_awards=race_number == len(schedule_rows),
+            schedule_race_number=race_number,
         )
 
     @app_commands.command(name="tournament_schedule", description="Show the saved track order for a tournament.")
@@ -650,10 +702,10 @@ class TournamentsCog(commands.Cog):
             return
 
         track_keys = [str(row["track_key"]) for row in rows]
-        completed_count = await self.bot.db.tournament_race_count(tournament_id)
+        completed_count = await self.bot.db.tournament_scheduled_race_count(tournament_id)
         await interaction.response.send_message(schedule_text(track_keys, completed_count), ephemeral=True)
 
-    @app_commands.command(name="tournament_close", description="Close a tournament.")
+    @app_commands.command(name="tournament_close", description="Finalise standings, save Season History, and close a tournament.")
     async def tournament_close(self, interaction: discord.Interaction, tournament_id: int):
         tournament = await self.bot.db.get_tournament(tournament_id)
         if not tournament:
@@ -664,10 +716,14 @@ class TournamentsCog(commands.Cog):
             return
 
         async def close(confirm_interaction: discord.Interaction):
-            await self.bot.db.close_tournament(tournament_id)
+            try:
+                await self.bot.db.close_tournament(tournament_id)
+            except ValueError as exc:
+                await confirm_interaction.response.edit_message(content=str(exc), embed=None, view=None)
+                return
             await audit_log(self.bot, "Tournament Closed", f"#{tournament_id} {tournament['name']}", confirm_interaction.user)
             await confirm_interaction.response.edit_message(
-                content=f"Tournament `{tournament_id}` closed.",
+                content=f"Tournament `{tournament_id}` finalised, saved to Season History, and closed.",
                 embed=None,
                 view=None,
             )

@@ -22,6 +22,7 @@ async def send_race_report(
     events: list[RaceEvent],
     weather_name: str,
     title: str,
+    race_laps: int,
     predictions: PredictionView | None = None,
     rivalry_watch=None,
     final_embed: discord.Embed | None = None,
@@ -30,12 +31,21 @@ async def send_race_report(
     result_embed = Embeds.results(results, title=title)
     recap_embed = race_recap_embed(results, title, TRACKS[track_key].name, weather_name)
     prediction_results = predictions.results_embed(results, title) if predictions else None
-    story_embed = race_story_embed(rivalry_watch or [])
     reward_embeds = (
-        await process_race_rewards(db, track_key, race_id, teams, results, events, weather_name, title)
+        await process_race_rewards(db, track_key, race_id, teams, results, events, weather_name, title, race_laps)
         if award_rewards
         else []
     )
+    if rivalry_watch is None and award_rewards:
+        rivalry_watch = await db.race_rivalry_watch([
+            {
+                "team_id": result.team_id, "position": result.position, "total_time": result.total_time,
+                "crashes": result.crashes, "illegal_moves": result.illegal_moves,
+                "disqualified": result.disqualified, "dnf": result.dnf,
+            }
+            for result in results
+        ])
+    story_embed = race_story_embed(rivalry_watch or [])
 
     newspaper = render_race_newspaper(
         results=results,

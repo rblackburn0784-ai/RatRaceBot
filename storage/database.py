@@ -63,7 +63,8 @@ CREATE TABLE IF NOT EXISTS races (
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     events_json TEXT NOT NULL,
     results_json TEXT NOT NULL,
-    replay_json TEXT
+    replay_json TEXT,
+    schedule_race_number INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS tournament_schedule (
@@ -164,6 +165,11 @@ CREATE TABLE IF NOT EXISTS track_records (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (track_key, record_key)
 );
+
+CREATE TABLE IF NOT EXISTS race_processing (
+    race_id INTEGER PRIMARY KEY,
+    processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 class Database:
@@ -173,12 +179,19 @@ class Database:
         self.lock = asyncio.Lock()
 
     async def init(self) -> None:
-        Path(self.path).parent.mkdir(parents=True, exist_ok=True) if Path(self.path).parent != Path('.') else None
-        self.conn = sqlite3.connect(self.path)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(SCHEMA)
-        self._migrate()
-        self.conn.commit()
+        async with self.lock:
+            if self.conn is not None:
+                # Re-running init is safe and re-applies migrations without leaking a connection.
+                self.conn.executescript(SCHEMA)
+                self._migrate()
+                self.conn.commit()
+                return
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True) if Path(self.path).parent != Path('.') else None
+            self.conn = sqlite3.connect(self.path)
+            self.conn.row_factory = sqlite3.Row
+            self.conn.executescript(SCHEMA)
+            self._migrate()
+            self.conn.commit()
 
     def _migrate(self) -> None:
         conn = self._require()
@@ -194,6 +207,37 @@ class Database:
         race_columns = {row["name"] for row in conn.execute("PRAGMA table_info(races)").fetchall()}
         if "replay_json" not in race_columns:
             conn.execute("ALTER TABLE races ADD COLUMN replay_json TEXT")
+        if "schedule_race_number" not in race_columns:
+            conn.execute("ALTER TABLE races ADD COLUMN schedule_race_number INTEGER")
+            # v0.4.1 could not distinguish scheduled from manual races. Preserve its old
+            # progress semantics once during migration by mapping the earliest races onto
+            # existing schedule slots. New manual races remain NULL from v0.4.2 onward.
+            tournament_ids = conn.execute(
+                "SELECT DISTINCT tournament_id FROM races WHERE tournament_id IS NOT NULL"
+            ).fetchall()
+            for tournament_row in tournament_ids:
+                tournament_id = int(tournament_row["tournament_id"])
+                schedule_rows = conn.execute(
+                    "SELECT race_number FROM tournament_schedule WHERE tournament_id=? ORDER BY race_number",
+                    (tournament_id,),
+                ).fetchall()
+                race_rows = conn.execute(
+                    "SELECT id FROM races WHERE tournament_id=? ORDER BY id",
+                    (tournament_id,),
+                ).fetchall()
+                for schedule_row, race_row in zip(schedule_rows, race_rows):
+                    conn.execute(
+                        "UPDATE races SET schedule_race_number=? WHERE id=?",
+                        (int(schedule_row["race_number"]), int(race_row["id"])),
+                    )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_races_tournament_schedule_number "
+            "ON races(tournament_id, schedule_race_number) WHERE schedule_race_number IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS race_processing ("
+            "race_id INTEGER PRIMARY KEY, processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
 
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(tournament_teams)").fetchall()}
         stat_columns = {
@@ -328,6 +372,8 @@ class Database:
             )
             """
         )
+        # v0.4.1 total-time records mixed race lengths and could include DNFs.
+        conn.execute("DELETE FROM track_records WHERE record_key IN ('winner_time', 'best_time')")
 
     async def close(self) -> None:
         if self.conn:
@@ -505,10 +551,21 @@ class Database:
                 self._require_open_tournament_conn(conn, tournament_id)
                 if not conn.execute("SELECT 1 FROM teams WHERE id=?", (team_id,)).fetchone():
                     raise ValueError("Team not found.")
-                conn.execute(
-                    "INSERT OR IGNORE INTO tournament_teams(tournament_id, team_id) VALUES (?, ?)",
+                already_entered = conn.execute(
+                    "SELECT 1 FROM tournament_teams WHERE tournament_id=? AND team_id=?",
                     (tournament_id, team_id),
-                )
+                ).fetchone()
+                if not already_entered:
+                    count_row = conn.execute(
+                        "SELECT COUNT(*) AS team_count FROM tournament_teams WHERE tournament_id=?",
+                        (tournament_id,),
+                    ).fetchone()
+                    if int(count_row["team_count"]) >= 10:
+                        raise ValueError("A tournament can have a maximum of 10 teams.")
+                    conn.execute(
+                        "INSERT INTO tournament_teams(tournament_id, team_id) VALUES (?, ?)",
+                        (tournament_id, team_id),
+                    )
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -541,15 +598,28 @@ class Database:
         row = await self.fetchone("SELECT COUNT(*) AS race_count FROM races WHERE tournament_id=?", (tournament_id,))
         return int(row["race_count"]) if row else 0
 
+    async def tournament_scheduled_race_count(self, tournament_id: int) -> int:
+        row = await self.fetchone(
+            "SELECT COUNT(*) AS race_count FROM races WHERE tournament_id=? AND schedule_race_number IS NOT NULL",
+            (tournament_id,),
+        )
+        return int(row["race_count"]) if row else 0
+
     async def next_scheduled_track(self, tournament_id: int) -> tuple[int, str] | None:
-        next_race_number = await self.tournament_race_count(tournament_id) + 1
         row = await self.fetchone(
             """
-            SELECT race_number, track_key
-            FROM tournament_schedule
-            WHERE tournament_id=? AND race_number=?
+            SELECT ts.race_number, ts.track_key
+            FROM tournament_schedule ts
+            WHERE ts.tournament_id=?
+              AND NOT EXISTS (
+                  SELECT 1 FROM races r
+                  WHERE r.tournament_id=ts.tournament_id
+                    AND r.schedule_race_number=ts.race_number
+              )
+            ORDER BY ts.race_number
+            LIMIT 1
             """,
-            (tournament_id, next_race_number),
+            (tournament_id,),
         )
         if not row:
             return None
@@ -574,8 +644,20 @@ class Database:
             (limit,),
         )
 
+    async def tournament_team_count(self, tournament_id: int) -> int:
+        row = await self.fetchone(
+            "SELECT COUNT(*) AS team_count FROM tournament_teams WHERE tournament_id=?",
+            (tournament_id,),
+        )
+        return int(row["team_count"]) if row else 0
+
+    async def require_full_tournament_grid(self, tournament_id: int) -> None:
+        count = await self.tournament_team_count(tournament_id)
+        if count != 10:
+            raise ValueError(f"Tournament races require exactly 10 entered teams; this tournament has {count}.")
+
     async def close_tournament(self, tournament_id: int) -> None:
-        await self.execute("UPDATE tournaments SET status='closed' WHERE id=?", (tournament_id,))
+        await self.finalize_tournament(tournament_id)
 
     async def tournament_team_ids(self, tournament_id: int) -> list[int]:
         rows = await self.fetchall("SELECT team_id FROM tournament_teams WHERE tournament_id=? ORDER BY team_id", (tournament_id,))
@@ -632,7 +714,9 @@ class Database:
                 WHERE tournament_id=? AND team_id=?
                 """,
                 (
-                    r["points"], 1 if r["position"] == 1 else 0, 1 if r["position"] <= 3 else 0,
+                    r["points"],
+                    1 if r["position"] == 1 and not r.get("dnf") and not r.get("disqualified") else 0,
+                    1 if r["position"] <= 3 and not r.get("dnf") and not r.get("disqualified") else 0,
                     r["warnings"], 1 if r["dnf"] else 0, 1 if r["disqualified"] else 0,
                     r.get("overtakes", 0), r.get("crashes", 0), r.get("illegal_moves", 0),
                     r.get("last_minute_wins", 0), r.get("pit_stops", 0), r.get("near_misses", 0),
@@ -688,6 +772,7 @@ class Database:
         events: list[dict],
         results: list[dict],
         replay_data: dict | None = None,
+        schedule_race_number: int | None = None,
     ) -> int:
         """Atomically update tournament standings and persist the race."""
         async with self.lock:
@@ -695,11 +780,42 @@ class Database:
             try:
                 conn.execute("BEGIN")
                 self._require_open_tournament_conn(conn, tournament_id)
+                count_row = conn.execute(
+                    "SELECT COUNT(*) AS team_count FROM tournament_teams WHERE tournament_id=?",
+                    (tournament_id,),
+                ).fetchone()
+                if int(count_row["team_count"]) != 10:
+                    raise ValueError(f"Tournament races require exactly 10 entered teams; this tournament has {int(count_row['team_count'])}.")
+                entered_ids = {
+                    int(row["team_id"])
+                    for row in conn.execute(
+                        "SELECT team_id FROM tournament_teams WHERE tournament_id=?", (tournament_id,)
+                    ).fetchall()
+                }
+                result_ids = {int(result.get("team_id", 0)) for result in results}
+                if result_ids != entered_ids:
+                    raise ValueError("Tournament races must include all 10 entered teams exactly once.")
+                if len(results) != 10:
+                    raise ValueError("Tournament races must contain exactly 10 results.")
+                if schedule_race_number is not None:
+                    scheduled = conn.execute(
+                        "SELECT track_key FROM tournament_schedule WHERE tournament_id=? AND race_number=?",
+                        (tournament_id, schedule_race_number),
+                    ).fetchone()
+                    if not scheduled:
+                        raise ValueError("That scheduled race does not exist.")
+                    if str(scheduled["track_key"]) != track_key:
+                        raise ValueError("Scheduled race track does not match the requested track.")
+                    if conn.execute(
+                        "SELECT 1 FROM races WHERE tournament_id=? AND schedule_race_number=?",
+                        (tournament_id, schedule_race_number),
+                    ).fetchone():
+                        raise ValueError("That scheduled race has already been completed.")
                 self._apply_race_results_conn(conn, tournament_id, results)
                 cur = conn.execute(
                     """
-                    INSERT INTO races(tournament_id, track_key, seed, events_json, results_json, replay_json)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO races(tournament_id, track_key, seed, events_json, results_json, replay_json, schedule_race_number)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         tournament_id,
@@ -708,11 +824,198 @@ class Database:
                         json.dumps(events),
                         json.dumps(results),
                         json.dumps(replay_data) if replay_data is not None else None,
+                        schedule_race_number,
                     ),
                 )
                 race_id = int(cur.lastrowid)
                 conn.commit()
                 return race_id
+            except Exception:
+                conn.rollback()
+                raise
+
+    async def process_post_race_atomic(
+        self,
+        *,
+        race_id: int,
+        results: list[dict],
+        xp_updates: list[dict],
+        achievements: list[dict],
+        sponsor_offers: list[dict],
+        fatigue_updates: list[dict],
+        track_records: list[dict],
+    ) -> dict:
+        """Apply all persistent post-race progression once, in one transaction."""
+        async with self.lock:
+            conn = self._require()
+            try:
+                conn.execute("BEGIN")
+                if conn.execute("SELECT 1 FROM race_processing WHERE race_id=?", (race_id,)).fetchone():
+                    conn.rollback()
+                    return {"processed": False, "new_achievements": [], "new_records": []}
+
+                saved_results = [r for r in results if int(r.get("team_id", 0)) > 0]
+                team_ids = [int(r["team_id"]) for r in saved_results]
+
+                # Fatigue from a prior race decays before new fatigue is applied.
+                for team_id in team_ids:
+                    conn.execute(
+                        "UPDATE team_fatigue SET races_remaining=races_remaining-1, updated_at=CURRENT_TIMESTAMP WHERE team_id=?",
+                        (team_id,),
+                    )
+                conn.execute("DELETE FROM team_fatigue WHERE races_remaining <= 0")
+
+                for result in saved_results:
+                    official = not result.get("dnf") and not result.get("disqualified")
+                    conn.execute(
+                        """
+                        INSERT INTO team_profiles(
+                            team_id, races, wins, podiums, warnings, dnfs, disqualifications,
+                            overtakes, crashes, illegal_moves, last_minute_wins, pit_stops,
+                            near_misses, total_damage, peak_damage
+                        )
+                        VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(team_id) DO UPDATE SET
+                            races = races + 1,
+                            wins = wins + excluded.wins,
+                            podiums = podiums + excluded.podiums,
+                            warnings = warnings + excluded.warnings,
+                            dnfs = dnfs + excluded.dnfs,
+                            disqualifications = disqualifications + excluded.disqualifications,
+                            overtakes = overtakes + excluded.overtakes,
+                            crashes = crashes + excluded.crashes,
+                            illegal_moves = illegal_moves + excluded.illegal_moves,
+                            last_minute_wins = last_minute_wins + excluded.last_minute_wins,
+                            pit_stops = pit_stops + excluded.pit_stops,
+                            near_misses = near_misses + excluded.near_misses,
+                            total_damage = total_damage + excluded.total_damage,
+                            peak_damage = MAX(peak_damage, excluded.peak_damage),
+                            updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (
+                            int(result["team_id"]),
+                            1 if official and int(result["position"]) == 1 else 0,
+                            1 if official and int(result["position"]) <= 3 else 0,
+                            int(result.get("warnings", 0)),
+                            1 if result.get("dnf") else 0,
+                            1 if result.get("disqualified") else 0,
+                            int(result.get("overtakes", 0)), int(result.get("crashes", 0)),
+                            int(result.get("illegal_moves", 0)), int(result.get("last_minute_wins", 0)) if official else 0,
+                            int(result.get("pit_stops", 0)), int(result.get("near_misses", 0)),
+                            int(result.get("damage", 0)), int(result.get("damage", 0)),
+                        ),
+                    )
+
+                # Rivalries are derived from adjacent classified cars. A "close finish" only
+                # exists when both cars actually finished; incidents can still fuel a rivalry.
+                ordered = sorted(saved_results, key=lambda result: int(result["position"]))
+                for first, second in zip(ordered, ordered[1:]):
+                    both_finished = (
+                        not first.get("dnf") and not first.get("disqualified")
+                        and not second.get("dnf") and not second.get("disqualified")
+                    )
+                    time_gap = abs(float(first.get("total_time", 0)) - float(second.get("total_time", 0)))
+                    close_finish = both_finished and time_gap <= 5
+                    contacts = int(first.get("crashes", 0)) + int(second.get("crashes", 0))
+                    illegal_incidents = (
+                        int(first.get("illegal_moves", 0)) + int(second.get("illegal_moves", 0))
+                        + (1 if first.get("disqualified") else 0) + (1 if second.get("disqualified") else 0)
+                    )
+                    if not close_finish and contacts == 0 and illegal_incidents == 0:
+                        continue
+                    heat = (2 if close_finish else 0) + contacts + illegal_incidents * 2
+                    team_a_id, team_b_id = sorted((int(first["team_id"]), int(second["team_id"])))
+                    conn.execute(
+                        """
+                        INSERT INTO team_rivalries(
+                            team_a_id, team_b_id, heat, races, close_finishes,
+                            contacts, illegal_incidents, last_winner_id
+                        )
+                        VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+                        ON CONFLICT(team_a_id, team_b_id) DO UPDATE SET
+                            heat = heat + excluded.heat,
+                            races = races + 1,
+                            close_finishes = close_finishes + excluded.close_finishes,
+                            contacts = contacts + excluded.contacts,
+                            illegal_incidents = illegal_incidents + excluded.illegal_incidents,
+                            last_winner_id = excluded.last_winner_id,
+                            updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (team_a_id, team_b_id, max(1, heat), 1 if close_finish else 0, contacts, illegal_incidents, int(first["team_id"])),
+                    )
+
+                for update in xp_updates:
+                    conn.execute(
+                        """
+                        INSERT INTO team_progress(team_id, xp, cosmetic_title)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(team_id) DO UPDATE SET
+                            xp = xp + excluded.xp,
+                            cosmetic_title = excluded.cosmetic_title,
+                            updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (int(update["team_id"]), int(update["xp"]), str(update["cosmetic_title"])),
+                    )
+
+                new_achievements = []
+                for achievement in achievements:
+                    cur = conn.execute(
+                        "INSERT OR IGNORE INTO team_achievements(team_id, achievement_key, achievement_name) VALUES (?, ?, ?)",
+                        (int(achievement["team_id"]), achievement["key"], achievement["name"]),
+                    )
+                    if cur.rowcount:
+                        new_achievements.append(dict(achievement))
+
+                for offer in sponsor_offers:
+                    conn.execute(
+                        "INSERT INTO sponsor_offers(team_id, sponsor_name, benefit_text, drawback_text) VALUES (?, ?, ?, ?)",
+                        (int(offer["team_id"]), offer["sponsor_name"], offer["benefit"], offer["drawback"]),
+                    )
+
+                for fatigue in fatigue_updates:
+                    conn.execute(
+                        """
+                        INSERT INTO team_fatigue(team_id, fatigue_key, fatigue_name, description, races_remaining)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(team_id) DO UPDATE SET
+                            fatigue_key=excluded.fatigue_key, fatigue_name=excluded.fatigue_name,
+                            description=excluded.description, races_remaining=excluded.races_remaining,
+                            updated_at=CURRENT_TIMESTAMP
+                        """,
+                        (int(fatigue["team_id"]), fatigue["key"], fatigue["name"], fatigue["description"], int(fatigue.get("races_remaining", 1))),
+                    )
+
+                new_records = []
+                for record in track_records:
+                    current = conn.execute(
+                        "SELECT record_value FROM track_records WHERE track_key=? AND record_key=?",
+                        (record["track_key"], record["record_key"]),
+                    ).fetchone()
+                    value = float(record["record_value"])
+                    higher = bool(record.get("higher_is_better", True))
+                    should_update = current is None or (higher and value > float(current["record_value"])) or (not higher and value < float(current["record_value"]))
+                    if not should_update:
+                        continue
+                    conn.execute(
+                        """
+                        INSERT INTO track_records(track_key, record_key, record_name, record_value, team_id, team_name, race_id, details)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(track_key, record_key) DO UPDATE SET
+                            record_name=excluded.record_name, record_value=excluded.record_value,
+                            team_id=excluded.team_id, team_name=excluded.team_name,
+                            race_id=excluded.race_id, details=excluded.details,
+                            updated_at=CURRENT_TIMESTAMP
+                        """,
+                        (
+                            record["track_key"], record["record_key"], record["record_name"], value,
+                            record.get("team_id"), record.get("team_name"), race_id, record.get("details", ""),
+                        ),
+                    )
+                    new_records.append(dict(record))
+
+                conn.execute("INSERT INTO race_processing(race_id) VALUES (?)", (race_id,))
+                conn.commit()
+                return {"processed": True, "new_achievements": new_achievements, "new_records": new_records}
             except Exception:
                 conn.rollback()
                 raise
@@ -751,8 +1054,8 @@ class Database:
             """,
             (
                 int(result["team_id"]),
-                1 if int(result["position"]) == 1 else 0,
-                1 if int(result["position"]) <= 3 else 0,
+                1 if int(result["position"]) == 1 and not result.get("dnf") and not result.get("disqualified") else 0,
+                1 if int(result["position"]) <= 3 and not result.get("dnf") and not result.get("disqualified") else 0,
                 int(result.get("warnings", 0)),
                 1 if result.get("dnf") else 0,
                 1 if result.get("disqualified") else 0,
@@ -878,6 +1181,79 @@ class Database:
             """,
             (*team_ids, *team_ids, limit),
         )
+
+    async def finalize_tournament(self, tournament_id: int) -> list[sqlite3.Row]:
+        """Close a tournament and snapshot final standings in one transaction. Safe to call again."""
+        async with self.lock:
+            conn = self._require()
+            try:
+                conn.execute("BEGIN")
+                tournament = conn.execute("SELECT * FROM tournaments WHERE id=?", (tournament_id,)).fetchone()
+                if not tournament:
+                    raise ValueError("Tournament not found.")
+                race_count = conn.execute(
+                    "SELECT COUNT(*) AS race_count FROM races WHERE tournament_id=?",
+                    (tournament_id,),
+                ).fetchone()
+                if int(race_count["race_count"]) <= 0:
+                    raise ValueError("A tournament cannot be finalised before at least one race has been completed.")
+                rows = conn.execute(
+                    """
+                    SELECT tt.*, t.name, t.driver_name, t.car_name
+                    FROM tournament_teams tt
+                    JOIN teams t ON t.id = tt.team_id
+                    WHERE tt.tournament_id=?
+                    ORDER BY tt.points DESC, tt.wins DESC, tt.podiums DESC, tt.races ASC, t.name ASC
+                    """,
+                    (tournament_id,),
+                ).fetchall()
+                if not rows:
+                    raise ValueError("Tournament has no standings to finalise.")
+                standings = [
+                    {
+                        "team_id": int(row["team_id"]),
+                        "name": row["name"],
+                        "driver_name": row["driver_name"],
+                        "points": int(row["points"]),
+                        "wins": int(row["wins"]),
+                        "podiums": int(row["podiums"]),
+                    }
+                    for row in rows
+                ]
+                top = standings[:3]
+                conn.execute(
+                    """
+                    INSERT INTO season_history(
+                        tournament_id, tournament_name, champion_team_id, champion_name,
+                        runner_up_team_id, runner_up_name, third_team_id, third_name,
+                        standings_json, completed_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(tournament_id) DO UPDATE SET
+                        tournament_name = excluded.tournament_name,
+                        champion_team_id = excluded.champion_team_id,
+                        champion_name = excluded.champion_name,
+                        runner_up_team_id = excluded.runner_up_team_id,
+                        runner_up_name = excluded.runner_up_name,
+                        third_team_id = excluded.third_team_id,
+                        third_name = excluded.third_name,
+                        standings_json = excluded.standings_json,
+                        completed_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        tournament_id, tournament["name"],
+                        top[0]["team_id"] if len(top) > 0 else None, top[0]["name"] if len(top) > 0 else None,
+                        top[1]["team_id"] if len(top) > 1 else None, top[1]["name"] if len(top) > 1 else None,
+                        top[2]["team_id"] if len(top) > 2 else None, top[2]["name"] if len(top) > 2 else None,
+                        json.dumps(standings),
+                    ),
+                )
+                conn.execute("UPDATE tournaments SET status='closed' WHERE id=?", (tournament_id,))
+                conn.commit()
+                return rows
+            except Exception:
+                conn.rollback()
+                raise
 
     async def record_season_history(self, tournament_id: int) -> None:
         tournament = await self.get_tournament(tournament_id)

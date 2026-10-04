@@ -16,7 +16,7 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - Semi-real-time race streaming with commentary, overtakes, accidents, pit stops, tyre wear, damage, illegal contact warnings, disqualifications, DNFs, and finish classification.
 - Single-race wizard for drivers with 5, 7, or 10 lap races and Full AI, Players Only, or Players Plus AI modes.
 - Tournament system for 10-team scheduled championships with short, medium, and long formats.
-- Tournament scoring gives 10 points for 1st down to 1 point for 10th.
+- Tournament scoring gives 10 points for 1st down through the classified finishers; DNFs and DSQs score 0.
 - Tournament stat tracking for overtakes, crashes, illegal moves, last-minute wins, near misses, and pit stops.
 - Tournament-only persistent damage carries a repaired, capped slice of car damage into the next race for extra stakes without runaway punishment.
 - Media hooks for GIFs and audio clips you create yourself.
@@ -24,6 +24,19 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - Discord ownership controls: admins can use all commands, while regular drivers can create one linked team and manage only their own team/parts wizards.
 - Deterministic race seed plus full build/laps/damage replay snapshot saved for new races.
 - `/race_replay` is non-destructive: it does not duplicate career stats, XP, achievements, sponsors, fatigue, or track records.
+
+## v0.4.2 reliability rules
+
+- Classification is always **official finishers → DNF → DSQ**. DNFs and DSQs score **0 championship points**.
+- Win/podium progression, First Win, sponsor podium offers, interviews, newspaper winner headlines and timing records only use official finishers.
+- Track timing records now include **Fastest Lap** plus separate **Fastest 5-Lap Race**, **Fastest 7-Lap Race**, and **Fastest 10-Lap Race** records. DNFs/DSQs are excluded.
+- Tournament race starts require the full **10-team** grid. Manual races do not advance the saved schedule.
+- The last scheduled race automatically finalises and closes the championship; manual close performs the same atomic Season History save.
+- Post-race progression is idempotent by `race_id`, preventing duplicate XP/achievements/sponsors/records on retries.
+- Process-local race/lobby locks block overlapping use of the same team or tournament.
+- Dynamic GIF generation runs off the Discord event loop and generated GIF cache files are pruned automatically.
+- Malformed optional media config and invalid race-tick values fall back safely instead of preventing startup.
+- Regression tests for these rules live under `tests/`.
 
 ## Install
 
@@ -95,14 +108,14 @@ python main.py
 - `/tournament_wizard` — create a tournament with 10 teams and a short, medium, or long track schedule.
 - `/tournament_create` — create a tournament.
 - `/tournament_add_team` — add team to tournament.
-- `/tournament_start_race` — run a race for the next 10 teams or selected teams.
+- `/tournament_start_race` — run a manual tournament race using all 10 entered teams; manual races do not consume scheduled race slots.
 - `/tournament_next_race` — run the next race from the saved track schedule.
 - `/tournament_schedule` — show the saved tournament track order.
 - `/tournament_standings` — show points table.
 - `/tournament_stats` — show current tournament points and fun stat leaders.
 - `/season_history` — show completed tournament champions and podiums.
-- Final scheduled race — posts and pins a final podium, placements, and stat awards report.
-- `/tournament_close` — close tournament.
+- Final scheduled race — atomically finalises standings, saves Season History, closes the tournament, then posts/pins the final awards report.
+- `/tournament_close` — manually finalise standings, save Season History, and close a tournament after at least one race.
 
 ### Admin
 - `/ratbot_init` — initialise database.
@@ -174,4 +187,4 @@ The bot will send GIFs where available. Audio support is left as a hook: the cod
 
 ## Notes
 
-Current code version: **v0.4.1 Stabilisation**. The engine is intentionally readable, tunable, and deterministic. Balance values live in `data/defaults.py`. See `UPGRADE_v0.4.1.md` for upgrade/security notes.
+Current code version: **v0.4.2 — Race Rules, Tournament Integrity & Reliability**. The engine is intentionally readable, tunable, and deterministic. Balance values live in `data/defaults.py`. See `UPGRADE_v0.4.2.md` for upgrade notes.

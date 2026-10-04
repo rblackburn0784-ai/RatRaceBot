@@ -96,6 +96,7 @@ class RaceResult:
     last_minute_wins: int = 0
     pit_stops: int = 0
     near_misses: int = 0
+    fastest_lap: float | None = None
 
 @dataclass(slots=True)
 class RaceState:
@@ -117,3 +118,4 @@ class RaceState:
     illegal_moves: int = 0
     last_minute_wins: int = 0
     near_misses: int = 0
+    fastest_lap: float | None = None

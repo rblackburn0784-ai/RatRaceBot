@@ -304,8 +304,8 @@ class MainMenuView(discord.ui.View):
         if not admin_cog:
             await interaction.response.send_message("Admin tools are not loaded.", ephemeral=True)
             return
-        embed = admin_panel_embed()
         file = admin_panel_file()
+        embed = admin_panel_embed(include_image=file is not None)
         if file:
             await interaction.response.send_message(
                 embed=embed,
@@ -358,12 +358,13 @@ class MenuCog(commands.Cog):
                 title="Start Here",
                 description="Create your racing team first, then the full menu opens up.",
             )
-            embed.set_image(url="attachment://main_menu_background.png")
             rendered_menu = render_main_menu_card(False)
             if rendered_menu:
+                embed.set_image(url="attachment://main_menu_background.png")
                 file = discord.File(rendered_menu, filename="main_menu_background.png")
                 await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
             elif MAIN_MENU_BACKGROUND.exists():
+                embed.set_image(url="attachment://main_menu_background.png")
                 file = discord.File(MAIN_MENU_BACKGROUND, filename="main_menu_background.png")
                 await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
             else:
@@ -372,13 +373,14 @@ class MenuCog(commands.Cog):
 
         view = MainMenuView(self, interaction.user.id, show_admin=show_admin)
         embed = discord.Embed(title="Rat Rod Racing Bot")
-        embed.set_image(url="attachment://main_menu_background.png")
         rendered_menu = render_main_menu_card(show_admin)
 
         if rendered_menu:
+            embed.set_image(url="attachment://main_menu_background.png")
             file = discord.File(rendered_menu, filename="main_menu_background.png")
             await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
         elif MAIN_MENU_BACKGROUND.exists():
+            embed.set_image(url="attachment://main_menu_background.png")
             file = discord.File(MAIN_MENU_BACKGROUND, filename="main_menu_background.png")
             await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
         else:
@@ -446,19 +448,20 @@ class MenuCog(commands.Cog):
     async def version(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="Rat Rod Racing Bot",
-            description=f"Version {BOT_VERSION} - stabilisation and replay integrity",
+            description=f"Version {BOT_VERSION} - race rules, tournament integrity & reliability",
             color=discord.Color.dark_gold(),
         )
         embed.add_field(
             name="Recent Changes",
             value=(
-                "Exact race replay snapshots for new races\n"
-                "Replays no longer alter career stats/rewards\n"
-                "Closed-tournament write protection\n"
-                "Atomic tournament race save + standings update\n"
-                "Clean team deletion with orphan cleanup\n"
-                "Illegal-part risk corrected to one pre-race DSQ roll\n"
-                "Near-miss GIF fallback hardening"
+                "Finishers → DNF → DSQ classification; failed cars score 0\n"
+                "Winner/podium rewards protected from DNF/DSQ results\n"
+                "Fastest-lap plus separate 5/7/10-lap track records\n"
+                "Manual races no longer advance tournament schedules\n"
+                "Exactly 10 tournament entrants enforced for race starts\n"
+                "Final race/manual close now finalise Season History atomically\n"
+                "Idempotent post-race progression and active race/lobby locks\n"
+                "GIF work moved off the event loop with cache cleanup"
             ),
             inline=False,
         )

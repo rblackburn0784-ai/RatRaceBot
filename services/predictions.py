@@ -1,6 +1,7 @@
 import discord
 
 from models.domain import RaceResult, Team
+from services.race_rules import official_winner
 
 PREDICTION_SECONDS = 20
 
@@ -50,15 +51,15 @@ class PredictionView(discord.ui.View):
     def results_embed(self, results: list[RaceResult], title: str) -> discord.Embed | None:
         if not self.picks:
             return None
-        winner = min(results, key=lambda result: result.position)
+        winner = official_winner(results)
         correct = [
             display_name
             for team_id, display_name in self.picks.values()
-            if team_id == winner.team_id
+            if winner is not None and team_id == winner.team_id
         ]
         embed = discord.Embed(
             title="Prediction Results",
-            description=f"Winner: **{winner.team_name}**",
+            description=f"Winner: **{winner.team_name}**" if winner else "No official winner was classified.",
             color=discord.Color.dark_blue(),
         )
         embed.add_field(

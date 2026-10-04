@@ -61,13 +61,14 @@ def parts_catalogue_lines() -> list[str]:
     return lines
 
 
-def admin_panel_embed() -> discord.Embed:
+def admin_panel_embed(include_image: bool = True) -> discord.Embed:
     embed = discord.Embed(
         title="Rat Race Admin Panel",
         description="Private command hub for running teams, races, tournaments, and bot setup.",
         color=discord.Color.dark_gold(),
     )
-    embed.set_image(url="attachment://admin_panel_background.png")
+    if include_image:
+        embed.set_image(url="attachment://admin_panel_background.png")
     return embed
 
 
@@ -700,7 +701,7 @@ class AdminPanelView(discord.ui.View):
                 await select_interaction.response.send_message("This tournament does not have a saved schedule.", ephemeral=True)
                 return
             track_keys = [str(row["track_key"]) for row in rows]
-            completed_count = await self.cog.bot.db.tournament_race_count(int(tournament["id"]))
+            completed_count = await self.cog.bot.db.tournament_scheduled_race_count(int(tournament["id"]))
             await select_interaction.response.send_message(schedule_text(track_keys, completed_count), ephemeral=True)
 
         await self._choose_tournament(interaction, "Choose a tournament schedule.", show_schedule)
@@ -708,7 +709,11 @@ class AdminPanelView(discord.ui.View):
     async def _handle_tournament_close(self, interaction: discord.Interaction) -> None:
         async def ask_close(select_interaction: discord.Interaction, tournament):
             async def close_tournament(confirm_interaction: discord.Interaction):
-                await self.cog.bot.db.close_tournament(int(tournament["id"]))
+                try:
+                    await self.cog.bot.db.close_tournament(int(tournament["id"]))
+                except ValueError as exc:
+                    await confirm_interaction.response.edit_message(content=str(exc), embed=None, view=None)
+                    return
                 await audit_log(
                     self.cog.bot,
                     "Tournament Closed",
@@ -716,7 +721,7 @@ class AdminPanelView(discord.ui.View):
                     confirm_interaction.user,
                 )
                 await confirm_interaction.response.edit_message(
-                    content=f"Closed tournament **{tournament['name']}** (`{tournament['id']}`).",
+                    content=f"Finalised, saved and closed tournament **{tournament['name']}** (`{tournament['id']}`).",
                     embed=None,
                     view=None,
                 )
@@ -861,16 +866,22 @@ class AdminPanelView(discord.ui.View):
         team_ids: list[int],
         seed: str | None,
     ) -> None:
+        try:
+            await self.cog.bot.db.require_full_tournament_grid(tournament_id)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
         teams = []
         tournament_ids = set(await self.cog.bot.db.tournament_team_ids(tournament_id))
-        for team_id in team_ids[:10]:
-            if team_id not in tournament_ids:
-                continue
+        if len(team_ids) != 10 or set(team_ids) != tournament_ids:
+            await interaction.response.send_message("Tournament races must use all 10 entered teams exactly once.", ephemeral=True)
+            return
+        for team_id in team_ids:
             team = await self.cog.bot.db.get_team(team_id)
             if team:
                 teams.append(team)
-        if len(teams) < 2:
-            await interaction.response.send_message("I need at least 2 valid tournament teams.", ephemeral=True)
+        if len(teams) != 10:
+            await interaction.response.send_message("Tournament grid is incomplete; all 10 entered teams must exist.", ephemeral=True)
             return
         carryover_damage = await self.cog.bot.db.tournament_carryover_damage(tournament_id)
         engine = RaceEngine(track_key, teams, seed, initial_damage_by_team_id=carryover_damage)
@@ -972,8 +983,8 @@ class AdminCog(commands.Cog):
 
     @app_commands.command(name="admin_panel", description="Open a quick admin control panel.")
     async def admin_panel(self, interaction: discord.Interaction):
-        embed = admin_panel_embed()
         file = admin_panel_file()
+        embed = admin_panel_embed(include_image=file is not None)
         if file:
             await interaction.response.send_message(
                 embed=embed,

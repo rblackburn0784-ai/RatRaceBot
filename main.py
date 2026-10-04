@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 from config import Settings
 from storage.database import Database
+from services.race_activity import RaceActivityRegistry
 
 COGS = [
     "cogs.admin",
@@ -24,6 +25,7 @@ class RatRodBot(commands.Bot):
         super().__init__(command_prefix="!rr ", intents=intents)
         self.settings = settings
         self.db = Database(settings.database_path)
+        self.race_activity = RaceActivityRegistry()
 
     async def setup_hook(self) -> None:
         await self.db.init()

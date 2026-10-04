@@ -4,6 +4,7 @@ from pathlib import Path
 import hashlib
 import re
 import tempfile
+import time
 
 from models.domain import RaceEvent
 from models.enums import EventType
@@ -23,6 +24,9 @@ CAR_DIR = PROJECT_ROOT / "assets" / "cars"
 OUTPUT_DIR = Path(tempfile.gettempdir()) / "rat_race_event_gifs"
 FRAME_COUNT = 10
 FRAME_MS = 500
+
+CACHE_MAX_FILES = 500
+CACHE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 CAR_ALIASES = {
     "leadsled": ("leadsled", "ledsled"),
     "ledsled": ("ledsled", "leadsled"),
@@ -52,6 +56,37 @@ class DynamicRaceGifRenderer:
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._file_index: dict[str, Path] | None = None
+
+    def cleanup_cache(self, max_files: int = CACHE_MAX_FILES, max_age_seconds: int = CACHE_MAX_AGE_SECONDS) -> int:
+        """Remove stale/excess generated GIFs. Returns the number of deleted files."""
+        try:
+            files = [path for path in self.output_dir.glob("*.gif") if path.is_file()]
+        except OSError:
+            return 0
+        now = time.time()
+        deleted = 0
+        survivors = []
+        for path in files:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if now - stat.st_mtime > max_age_seconds:
+                try:
+                    path.unlink()
+                    deleted += 1
+                except OSError:
+                    pass
+            else:
+                survivors.append((stat.st_mtime, path))
+        survivors.sort(reverse=True)
+        for _, path in survivors[max_files:]:
+            try:
+                path.unlink()
+                deleted += 1
+            except OSError:
+                pass
+        return deleted
 
     def render(self, event: RaceEvent) -> Path | None:
         if Image is None or ImageDraw is None or ImageFont is None or ImageOps is None:

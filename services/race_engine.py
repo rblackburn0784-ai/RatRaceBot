@@ -557,11 +557,15 @@ class RaceEngine:
             )
 
     def _order_states(self) -> None:
+        # Classification rule: finishers/running cars first, then DNFs, then DSQs.
+        # A disqualification always outranks the DNF flag for classification purposes.
         running = [s for s in self.states if not s.dnf and not s.disqualified]
-        failed = [s for s in self.states if s.dnf or s.disqualified]
+        dnfs = [s for s in self.states if s.dnf and not s.disqualified]
+        disqualified = [s for s in self.states if s.disqualified]
         running.sort(key=lambda s: (-s.lap, s.total_time))
-        failed.sort(key=lambda s: (-s.lap, s.total_time))
-        self.states = running + failed
+        dnfs.sort(key=lambda s: (-s.lap, s.total_time))
+        disqualified.sort(key=lambda s: (-s.lap, s.total_time))
+        self.states = running + dnfs + disqualified
         for idx, s in enumerate(self.states, start=1):
             s.position = idx
 
@@ -610,8 +614,10 @@ class RaceEngine:
             for state in list(self.states):
                 if state.dnf or state.disqualified:
                     continue
+                lap_start_time = state.total_time
                 pace = self._pace_score(state)
-                state.total_time += self._lap_time(state, pace)
+                lap_time = self._lap_time(state, pace)
+                state.total_time += lap_time
                 state.lap = lap
                 car = self._track_adjusted_car_stats(state.team)
                 state.tyre_wear += max(1, self._surface_roughness() + self.rng.randint(1, 5) - car.handling // 2)
@@ -657,6 +663,16 @@ class RaceEngine:
                         actor=state,
                     )
 
+                # A fastest lap is the complete elapsed lap, including any pit-lane
+                # time added during this lap. Failed cars are excluded from timing
+                # records later, but keeping their state deterministic aids replay.
+                completed_lap_time = state.total_time - lap_start_time
+                state.fastest_lap = (
+                    completed_lap_time
+                    if state.fastest_lap is None
+                    else min(state.fastest_lap, completed_lap_time)
+                )
+
             previous = {s.team.id: s.position for s in self.states}
             previous_order = list(self.states)
             self._order_states()
@@ -699,27 +715,31 @@ class RaceEngine:
                             self._media_key("finish_line", s.car_colour),
                             actor=s,
                         )
-            leader = self.states[0]
-            self._comment(
-                EventType.LAP,
-                lap,
-                self._line(
-                    LAP_LEADER_LINES,
-                    lap=lap,
-                    laps=self.laps,
-                    car=self._colour_label(leader),
-                    driver=leader.team.driver_name,
-                    team=leader.team.name,
-                    car_name=leader.team.car_name,
-                ),
-                self._media_key("lap_leader", leader.car_colour),
-                actor=leader,
-            )
+            running_leaders = [state for state in self.states if not state.dnf and not state.disqualified]
+            if running_leaders:
+                leader = running_leaders[0]
+                self._comment(
+                    EventType.LAP,
+                    lap,
+                    self._line(
+                        LAP_LEADER_LINES,
+                        lap=lap,
+                        laps=self.laps,
+                        car=self._colour_label(leader),
+                        driver=leader.team.driver_name,
+                        team=leader.team.name,
+                        car_name=leader.team.car_name,
+                    ),
+                    self._media_key("lap_leader", leader.car_colour),
+                    actor=leader,
+                )
 
         self._order_states()
         results: list[RaceResult] = []
         for idx, s in enumerate(self.states, start=1):
-            points = POINTS_BY_POSITION.get(idx, 0)
+            official_finisher = not s.dnf and not s.disqualified and s.lap >= self.laps
+            # v0.4.2: only official finishers score championship points. DNFs and DSQs score zero.
+            points = POINTS_BY_POSITION.get(idx, 0) if official_finisher else 0
             results.append(RaceResult(
                 team_id=s.team.id or 0,
                 team_name=s.team.name,
@@ -737,42 +757,53 @@ class RaceEngine:
                 overtakes=s.overtakes,
                 crashes=s.crashes,
                 illegal_moves=s.illegal_moves,
-                last_minute_wins=s.last_minute_wins,
+                last_minute_wins=s.last_minute_wins if official_finisher else 0,
                 pit_stops=s.pit_stops,
                 near_misses=s.near_misses,
+                fastest_lap=s.fastest_lap,
             ))
 
-        podium_states = self.states[:3]
-        podium = results[:3]
-        winner = podium_states[0]
-        second_colour = podium_states[1].car_colour if len(podium_states) > 1 else None
-        third_colour = podium_states[2].car_colour if len(podium_states) > 2 else None
-        self._comment(
-            EventType.FINISH,
-            self.laps,
-            self._line(
-                FINISH_LINES,
-                car=self._colour_label(winner),
-                driver=winner.team.driver_name,
-                team=results[0].team_name,
-                car_name=winner.team.car_name,
-                track=self.track.name,
-            ),
-            self._media_key("finish_line", winner.car_colour),
-            actor=winner,
-        )
-        self._comment(
-            EventType.PODIUM,
-            self.laps,
-            self._line(
-                PODIUM_LINES,
-                first=podium[0].team_name,
-                second=podium[1].team_name if len(podium) > 1 else "-",
-                third=podium[2].team_name if len(podium) > 2 else "-",
-            ),
-            self._media_key("podium", winner.car_colour, second_colour, third_colour),
-            participants=podium_states,
-        )
+        finisher_states = [s for s in self.states if not s.dnf and not s.disqualified and s.lap >= self.laps]
+        finisher_results = [r for r in results if not r.dnf and not r.disqualified and r.laps_completed >= self.laps]
+        if finisher_states:
+            podium_states = finisher_states[:3]
+            podium = finisher_results[:3]
+            winner = podium_states[0]
+            second_colour = podium_states[1].car_colour if len(podium_states) > 1 else None
+            third_colour = podium_states[2].car_colour if len(podium_states) > 2 else None
+            self._comment(
+                EventType.FINISH,
+                self.laps,
+                self._line(
+                    FINISH_LINES,
+                    car=self._colour_label(winner),
+                    driver=winner.team.driver_name,
+                    team=podium[0].team_name,
+                    car_name=winner.team.car_name,
+                    track=self.track.name,
+                ),
+                self._media_key("finish_line", winner.car_colour),
+                actor=winner,
+            )
+            self._comment(
+                EventType.PODIUM,
+                self.laps,
+                self._line(
+                    PODIUM_LINES,
+                    first=podium[0].team_name,
+                    second=podium[1].team_name if len(podium) > 1 else "-",
+                    third=podium[2].team_name if len(podium) > 2 else "-",
+                ),
+                self._media_key("podium", winner.car_colour, second_colour, third_colour),
+                participants=podium_states,
+            )
+        else:
+            self._comment(
+                EventType.FINISH,
+                self.laps,
+                f"{self.track.name} ends without an official finisher. No winner or podium is awarded.",
+                "finish_line",
+            )
         return self.events, results, self.seed
 
     @staticmethod

@@ -3,6 +3,7 @@ import discord
 from data.defaults import CREW_MEMBERS, PARTS
 from models.enums import CrewSlot, PartSlot
 from services.builds import BuildService
+from services.race_rules import official_winner
 
 
 PROFILE_KEYS = {
@@ -166,7 +167,7 @@ def race_story_embed(rivalries) -> discord.Embed | None:
 
 def race_recap_embed(results, title: str, track_name: str, weather_name: str | None = None) -> discord.Embed:
     ordered = sorted(results, key=lambda result: result.position)
-    winner = ordered[0]
+    winner = official_winner(ordered)
     mover = max(ordered, key=lambda result: (result.overtakes, result.points, -result.position))
     hardest_hit = max(ordered, key=lambda result: (result.damage, result.crashes, result.tyre_wear))
     trouble = max(ordered, key=lambda result: (result.illegal_moves + result.warnings * 2, result.illegal_moves))
@@ -178,7 +179,11 @@ def race_recap_embed(results, title: str, track_name: str, weather_name: str | N
         description=f"{track_name}{f' | Weather: {weather_name}' if weather_name else ''}",
         color=discord.Color.blurple(),
     )
-    embed.add_field(name="Winner", value=f"**{winner.team_name}** - {winner.driver_name}", inline=False)
+    embed.add_field(
+        name="Winner",
+        value=f"**{winner.team_name}** - {winner.driver_name}" if winner else "No official finisher",
+        inline=False,
+    )
     embed.add_field(name="Biggest Mover", value=f"**{mover.team_name}** - {mover.overtakes} overtakes", inline=True)
     embed.add_field(name="Hardest Hit", value=f"**{hardest_hit.team_name}** - {hardest_hit.damage}% damage", inline=True)
     embed.add_field(name="Most Questionable", value=f"**{trouble.team_name}** - {trouble.illegal_moves} illegal, {trouble.warnings} warnings", inline=True)
