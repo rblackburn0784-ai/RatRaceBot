@@ -259,3 +259,117 @@ TRACKS: dict[str, Track] = {
 }
 
 POINTS_BY_POSITION = {position: 11 - position for position in range(1, 11)}
+
+# ---------------------------------------------------------------------------
+# v0.4.3 Balance & Competitive Integrity overrides
+# ---------------------------------------------------------------------------
+# The seven archetypes are deliberately close in total competitive value while
+# retaining distinct strengths. Track weighting, hazards, wear and pit systems
+# decide where those strengths matter rather than one raw-stat total doing so.
+BALANCE_VERSION = "0.4.3"
+
+_BALANCED_CAR_STATS: dict[str, CarStats] = {
+    CarArchetype.COUPE_32.value: CarStats(
+        speed=4, acceleration=4, handling=3, durability=4, braking=4,
+        heat=2, intimidation=2, reliability=4, pit_friendliness=3,
+    ),
+    CarArchetype.ROADSTER_29.value: CarStats(
+        speed=4, acceleration=5, handling=4, durability=2, braking=3,
+        heat=2, intimidation=1, reliability=3, pit_friendliness=3,
+    ),
+    CarArchetype.TRUCK_50.value: CarStats(
+        speed=3, acceleration=4, handling=3, durability=6, braking=4,
+        heat=1, intimidation=4, reliability=5, pit_friendliness=6,
+    ),
+    CarArchetype.LEADSLED.value: CarStats(
+        speed=3, acceleration=3, handling=4, durability=5, braking=4,
+        heat=2, intimidation=5, reliability=4, pit_friendliness=3,
+    ),
+    CarArchetype.GASSER.value: CarStats(
+        speed=5, acceleration=6, handling=3, durability=3, braking=3,
+        heat=5, intimidation=4, reliability=4, pit_friendliness=2,
+    ),
+    CarArchetype.LAKSTER.value: CarStats(
+        speed=6, acceleration=4, handling=3, durability=3, braking=3,
+        heat=3, intimidation=2, reliability=4, pit_friendliness=2,
+    ),
+    CarArchetype.SEDAN.value: CarStats(
+        speed=3, acceleration=3, handling=4, durability=4, braking=4,
+        heat=1, intimidation=2, reliability=6, pit_friendliness=5,
+    ),
+}
+for _key, _stats in _BALANCED_CAR_STATS.items():
+    CAR_DEFINITIONS[_key].base_stats = _stats
+
+# Four legal parts in v0.4.2 had no meaningful downside. Their v0.4.3 versions
+# now make an explicit trade: useful performance in exchange for weight, heat,
+# service complexity or durability.
+_PART_BALANCE_OVERRIDES: dict[str, CarStats] = {
+    "race_shocks": CarStats(handling=2, durability=1, reliability=1, pit_friendliness=-1),
+    "juice_brakes": CarStats(speed=-1, braking=3, reliability=1),
+    "chopped_roof": CarStats(speed=1, handling=1, durability=-1, intimidation=1),
+    "quick_change": CarStats(speed=1, acceleration=1, reliability=-1, pit_friendliness=1),
+
+    # Illegal hardware remains tempting but no longer supplies overwhelming raw
+    # pace. It still carries +6% DSQ risk per fitted illegal part and extra strain.
+    "illegal_nitro_blower": CarStats(speed=6, acceleration=6, handling=-1, durability=-1, heat=3, intimidation=2, reliability=-1),
+    "illegal_chemical_slicks": CarStats(acceleration=4, handling=3, durability=-1, braking=-1, heat=2, reliability=-1),
+    "illegal_hidden_hydraulics": CarStats(acceleration=2, handling=4, durability=-2, reliability=-3, pit_friendliness=-2),
+    "illegal_line_lock": CarStats(acceleration=4, braking=2, heat=1, reliability=-1, pit_friendliness=-1),
+    "illegal_lead_ballast": CarStats(speed=-1, acceleration=-1, handling=4, braking=1, reliability=-2),
+    "illegal_hidden_overdrive": CarStats(speed=5, acceleration=2, heat=1, reliability=-2, pit_friendliness=-1),
+    "illegal_nitro_mix": CarStats(speed=5, acceleration=5, heat=4, intimidation=1, reliability=-3),
+    "illegal_road_spikes": CarStats(handling=-1, durability=-1, intimidation=6, reliability=-2),
+}
+for _key, _stats in _PART_BALANCE_OVERRIDES.items():
+    PARTS[_key].modifiers = _stats
+
+# Slot-level tuning pass. These values deliberately keep each item opinionated:
+# specialist parts can be weak away from their intended venue, while generalists
+# pay for flexibility through smaller gains or service/risk drawbacks.
+_PART_BALANCE_OVERRIDES_2: dict[str, CarStats] = {
+    # Engines
+    "blueprinted_flathead": CarStats(speed=2, acceleration=1, heat=1, reliability=1, pit_friendliness=-1),
+    "straight_six": CarStats(speed=-1, acceleration=1, handling=1, reliability=1),
+    "nailhead_v8": CarStats(speed=2, acceleration=3, durability=-1, heat=2, reliability=-1),
+    "cadillac_331": CarStats(speed=3, acceleration=2, handling=-1, braking=-1, heat=1),
+    "truck_torque_motor": CarStats(speed=-1, acceleration=4, handling=-1, durability=2, heat=1),
+    "junkyard_blower": CarStats(speed=2, acceleration=4, handling=-1, heat=3, reliability=-1, intimidation=2),
+
+    # Tyres
+    "bias_ply": CarStats(speed=2, handling=-1),
+    "slicks": CarStats(speed=1, acceleration=3, handling=-1, braking=-1),
+    "salt_flat_skins": CarStats(speed=4, handling=-2, braking=-1, heat=1),
+
+    # Suspension
+    "race_shocks": CarStats(handling=2, durability=1, pit_friendliness=-1),
+    "coilover_conversion": CarStats(handling=2, braking=1, reliability=-1, pit_friendliness=-1),
+    "cut_springs": CarStats(speed=1, handling=2, durability=-1, reliability=-1, intimidation=1),
+    "soft_dirt_setup": CarStats(speed=-1, durability=2, reliability=1),
+    "leaf_spring_pack": CarStats(speed=-1, handling=-1, durability=3, braking=1, pit_friendliness=1),
+
+    # Brakes
+    "front_disc_conversion": CarStats(handling=1, braking=3, reliability=-1, pit_friendliness=-2),
+    "handbrake_turn_bar": CarStats(handling=1, braking=1, reliability=-1, intimidation=1),
+    "drum_brake_fade": CarStats(speed=2, braking=-2, heat=1),
+    "oversized_master": CarStats(handling=-1, braking=4, pit_friendliness=-1),
+
+    # Body
+    "channeled_body": CarStats(speed=1, handling=1, durability=-1, pit_friendliness=-1),
+
+    # Transmission
+    "long_throw_shifter": CarStats(acceleration=-1, durability=1, reliability=1, intimidation=1),
+    "short_rear_gears": CarStats(speed=-1, acceleration=3, heat=1),
+
+    # Fuel
+    "cool_can": CarStats(heat=-1, reliability=1, pit_friendliness=-1),
+    "single_stromberg": CarStats(speed=-1, acceleration=-1, heat=-1, reliability=3, pit_friendliness=1),
+
+    # Tricks
+    "lucky_hula_girl": CarStats(intimidation=-1, reliability=1),
+    "smoke_screen": CarStats(handling=-1, heat=1, intimidation=4, reliability=-1),
+    "dirty_bumper": CarStats(speed=-1, handling=-1, durability=1, intimidation=4),
+    "reinforced_push_bar": CarStats(speed=-1, durability=2, braking=-1, intimidation=4),
+}
+for _key, _stats in _PART_BALANCE_OVERRIDES_2.items():
+    PARTS[_key].modifiers = _stats

@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from config import Settings
-from data.defaults import TRACKS
+from data.defaults import PARTS, TRACKS
 from models.domain import RaceResult, Team
 from models.enums import CarArchetype
 from models.stats import DriverStats
@@ -83,6 +83,10 @@ def result_dict(result: RaceResult) -> dict:
 class RaceRulesTests(unittest.TestCase):
     def test_engine_classifies_finishers_then_dnf_then_dsq_and_failed_cars_score_zero(self):
         teams = [make_team(i) for i in range(1, 11)]
+        # v0.4.3 deliberately made ordinary baseline cars safer. Force one test
+        # entrant into an all-illegal setup so this regression tests the
+        # classification rule itself instead of relying on ambient crash rate.
+        teams[0].parts = [key for key, part in PARTS.items() if "illegal_risk" in part.risk_tags]
         found = None
         # Find a deterministic seed containing at least one DNF/DSQ, then verify global invariants.
         for i in range(250):

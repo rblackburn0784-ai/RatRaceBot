@@ -211,6 +211,8 @@ def garage_summary_embed(team, profile, rivalries, in_open_tournament: bool) -> 
         value=(
             f"Tournament lock: **{'Team profile locked' if in_open_tournament else 'Editable'}**\n"
             f"Illegal part risk: **{illegal_risk}%**\n"
+            f"Mechanical strain: **{BuildService.build_strain(team)} ({BuildService.build_strain_label(team)})**\n"
+            f"Tuning efficiency: **{BuildService.tuning_efficiency(team) * 100:.0f}%**\n"
             f"Reputation: **{', '.join(tags)}**"
         ),
         inline=False,
@@ -225,7 +227,8 @@ def garage_summary_embed(team, profile, rivalries, in_open_tournament: bool) -> 
         value=(
             f"Parts fitted: **{len(installed_slots)}/{len(PartSlot)}**\n"
             f"Crew assigned: **{len(crew_slots)}/{len(CrewSlot)}**\n"
-            f"Races logged: **{_value(profile, 'races')}**"
+            f"Races logged: **{_value(profile, 'races')}**\n"
+            f"Crew effects: {BuildService.crew_effect_summary(team)}"
         ),
         inline=True,
     )

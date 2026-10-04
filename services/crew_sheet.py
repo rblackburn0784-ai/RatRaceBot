@@ -1,3 +1,4 @@
+from dataclasses import asdict
 from io import BytesIO
 from pathlib import Path
 
@@ -5,6 +6,7 @@ from data.defaults import CREW_MEMBERS
 from models.domain import Team
 from models.enums import CrewSlot
 from services.builds import BuildService
+from services.balance import crew_effect_for_member
 
 SHEET_SIZE = (1536, 1024)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -157,7 +159,12 @@ def _draw_slots(draw, fonts, team: Team) -> None:
         draw.text((box[0] + 18, box[1] + 14), slot.value.replace("_", " ").title(), fill="black", font=fonts["slot"])
         if member:
             draw.text((box[0] + 18, box[1] + 52), member.name, fill=(20, 20, 20), font=fonts["body"])
-            mods = [f"{key.title()} {value:+d}" for key, value in member.modifiers.as_dict().items() if value]
+            effects = crew_effect_for_member(member)
+            mods = [
+                f"{key.replace('_', ' ').title()} {value:+.1f}"
+                for key, value in asdict(effects).items()
+                if abs(value) >= 0.05
+            ]
             for index, line_text in enumerate(mods[:3], start=1):
                 draw.text((box[0] + 18, box[1] + 52 + index * 27), line_text, fill=(60, 60, 60), font=fonts["small"])
         else:
@@ -166,10 +173,10 @@ def _draw_slots(draw, fonts, team: Team) -> None:
 
 
 def _draw_totals(draw, fonts, team: Team) -> None:
-    stats = BuildService.crew_stats(team)
-    mods = [f"{key.replace('_', ' ').title()} {value:+d}" for key, value in stats.as_dict().items() if value]
-    lines = [" | ".join(mods[index:index + 3]) for index in range(0, len(mods), 3)] if mods else ["No crew stat modifiers yet"]
+    summary = BuildService.crew_effect_summary(team)
+    chunks = summary.split(" | ")
+    lines = [" | ".join(chunks[index:index + 3]) for index in range(0, len(chunks), 3)] if chunks else ["No specialist crew effects"]
     draw.rounded_rectangle((510, 810, 1025, 930), radius=8, outline="black", width=3, fill=(255, 255, 253))
-    draw.text((535, 830), "Overall Crew Stats", fill="black", font=fonts["slot"])
+    draw.text((535, 830), "Crew Specialist Effects", fill="black", font=fonts["slot"])
     for index, line in enumerate(lines[:2]):
         draw.text((535, 875 + index * 26), line, fill=(55, 55, 55), font=fonts["small"])

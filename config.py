@@ -1,7 +1,7 @@
 import os
 import logging
 
-BOT_VERSION = "0.4.2"
+BOT_VERSION = "0.4.3"
 from dataclasses import dataclass
 
 @dataclass(slots=True)

@@ -47,6 +47,11 @@ def _team_scrutineering_lines(
         warnings.append("high heat build")
     if stats.reliability <= 1:
         warnings.append("low reliability")
+    strain = BuildService.build_strain(team)
+    if strain >= 12:
+        warnings.append(f"knife-edge tune: strain {strain}")
+    elif strain >= 8:
+        warnings.append(f"stressed tune: strain {strain}")
     if carryover_damage:
         warnings.append(f"{carryover_damage}% repaired tournament damage")
     warnings.extend(_weather_warnings(team, weather))
@@ -69,6 +74,7 @@ def _team_scrutineering_lines(
 
     detail = (
         f"Illegal risk: **{illegal_risk}%**\n"
+        f"Strain: **{strain} ({BuildService.build_strain_label(team)})** | Tuning: **{BuildService.tuning_efficiency(team) * 100:.0f}%**\n"
         f"Checks: {', '.join(warnings) if warnings else 'no major issues'}\n"
         f"Traits: {', '.join(line.split(':**')[0].replace('**', '') for line in traits_text(team).splitlines())}\n"
         f"Verdict: {verdict}"

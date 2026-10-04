@@ -448,20 +448,20 @@ class MenuCog(commands.Cog):
     async def version(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="Rat Rod Racing Bot",
-            description=f"Version {BOT_VERSION} - race rules, tournament integrity & reliability",
+            description=f"Version {BOT_VERSION} - balance & competitive integrity",
             color=discord.Color.dark_gold(),
         )
         embed.add_field(
             name="Recent Changes",
             value=(
-                "Finishers → DNF → DSQ classification; failed cars score 0\n"
-                "Winner/podium rewards protected from DNF/DSQ results\n"
-                "Fastest-lap plus separate 5/7/10-lap track records\n"
-                "Manual races no longer advance tournament schedules\n"
-                "Exactly 10 tournament entrants enforced for race starts\n"
-                "Final race/manual close now finalise Season History atomically\n"
-                "Idempotent post-race progression and active race/lobby locks\n"
-                "GIF work moved off the event loop with cache cleanup"
+                "Seven archetypes rebalanced across the full championship schedule\n"
+                "Smooth diminishing-return pace model replaces the hard lap-time floor\n"
+                "All six driver stats now have useful, trade-off based race roles\n"
+                "Pit crew changed from raw stat stacking to specialist race effects\n"
+                "Mechanical Strain + Tuning Efficiency stop all-slot super-builds\n"
+                "Track/weather specialisation makes setup choice venue-dependent\n"
+                "Illegal parts remain +6% DSQ each with compounding build strain\n"
+                "Automated Balance Lab protects future competitive integrity"
             ),
             inline=False,
         )

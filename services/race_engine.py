@@ -1,3 +1,4 @@
+import math
 import random
 import re
 import time
@@ -7,7 +8,15 @@ from data.defaults import POINTS_BY_POSITION, TRACKS, WEATHER_CONDITIONS
 from models.domain import RaceEvent, RaceResult, RaceState, Team
 from models.enums import EventType
 from services.builds import BuildService
-from services.engagement import trait_modifiers
+from services.balance import (
+    centered_driver,
+    crew_effects,
+    driver_foundation,
+    effective_strain,
+    soft_stat,
+    track_part_adjustment,
+    trait_effects,
+)
 
 CAR_COLOURS = (
     "red",
@@ -211,6 +220,10 @@ class RaceEngine:
         self.initial_rng_state = self.rng.getstate()
         self.events: list[RaceEvent] = []
         self.states: list[RaceState] = []
+        self._car_stats_cache: dict[int, object] = {}
+        self._crew_cache: dict[int, object] = {}
+        self._trait_cache: dict[int, object] = {}
+        self._strain_cache: dict[int, float] = {}
 
     def _roll(self, sides: int = 20) -> int:
         return self.rng.randint(1, sides)
@@ -278,10 +291,37 @@ class RaceEngine:
             return None
         return min(rivals, key=lambda s: abs(s.position - state.position))
 
+    def _team_cache_key(self, team: Team) -> int:
+        return id(team)
+
+    def _crew_effects(self, team: Team):
+        key = self._team_cache_key(team)
+        if key not in self._crew_cache:
+            self._crew_cache[key] = crew_effects(team)
+        return self._crew_cache[key]
+
+    def _trait_effects(self, team: Team):
+        key = self._team_cache_key(team)
+        if key not in self._trait_cache:
+            self._trait_cache[key] = trait_effects(team, self.track, self.weather)
+        return self._trait_cache[key]
+
+    def _effective_strain(self, team: Team) -> float:
+        key = self._team_cache_key(team)
+        if key not in self._strain_cache:
+            self._strain_cache[key] = effective_strain(team, self._crew_effects(team).repair)
+        return self._strain_cache[key]
+
     def _track_adjusted_car_stats(self, team: Team):
-        return BuildService.clamp_car_stats(
-            BuildService.effective_car_stats(team) + trait_modifiers(team) + self.track.modifiers + self.weather.modifiers
-        )
+        key = self._team_cache_key(team)
+        if key not in self._car_stats_cache:
+            self._car_stats_cache[key] = BuildService.clamp_car_stats(
+                BuildService.effective_car_stats(team)
+                + self.track.modifiers
+                + self.weather.modifiers
+                + track_part_adjustment(team, self.track, self.weather)
+            )
+        return self._car_stats_cache[key]
 
     def _surface_roughness(self) -> int:
         return max(0, self.track.surface_roughness + self.weather.surface_roughness_delta)
@@ -292,32 +332,94 @@ class RaceEngine:
     def _pit_difficulty(self) -> int:
         return max(0, self.track.pit_difficulty + self.weather.pit_difficulty_delta)
 
-    def _pace_score(self, state: RaceState) -> int:
+    def _pace_score(self, state: RaceState) -> float:
         car = self._track_adjusted_car_stats(state.team)
         drv = state.team.stats
-        damage_penalty = state.damage // 12
-        tyre_penalty = state.tyre_wear // 15
-        return (
-            self._roll(20)
-            + car.speed * self.track.straight_bias
-            + car.acceleration * 2
-            + car.handling * self.track.corner_difficulty
-            + car.braking
-            + car.reliability
-            + drv.handling * 2
-            + drv.reflexes * 2
-            + drv.nerve
-            + state.momentum
-            - car.heat
-            - damage_penalty
-            - tyre_penalty
-            - self._surface_roughness()
+        crew = self._crew_effects(state.team)
+        traits = self._trait_effects(state.team)
+        strain = self._effective_strain(state.team)
+
+        straight = self.track.straight_bias / 6.0
+        corner = self.track.corner_difficulty / 6.0
+        rough = self._surface_roughness() / 6.0
+
+        # Diminishing returns keep extreme hardware useful without allowing a
+        # fully stacked build to become an unbeatable stat wall.
+        car_pace = (
+            soft_stat(car.speed) * (0.90 + 0.80 * straight)
+            + soft_stat(car.acceleration) * (0.82 + 0.25 * (1.0 - straight))
+            + soft_stat(car.handling) * (0.72 + 0.75 * corner)
+            + soft_stat(car.braking) * (0.28 + 0.48 * corner)
+            + soft_stat(car.durability) * (0.10 + 0.35 * rough)
+            + soft_stat(car.reliability) * 0.30
+            + soft_stat(car.intimidation) * 0.08
         )
 
-    def _lap_time(self, state: RaceState, pace: int) -> float:
-        base = 78.0 + self.track.corner_difficulty * 2.5 - self.track.straight_bias * 2.0
-        variance = self.rng.uniform(-2.5, 3.5)
-        time_delta = max(48.0, base - pace * 0.42 + variance)
+        # Every driver point contributes to a common concave skill foundation.
+        # Role-specific bonuses are intentionally smaller so 24-point min/max
+        # builds remain close to balanced drivers over a complete championship.
+        driver_pace = driver_foundation(drv) * 0.92
+        driver_pace += centered_driver(drv.handling) * (0.36 + 0.40 * corner)
+        driver_pace += centered_driver(drv.reflexes) * 0.36
+        driver_pace += centered_driver(drv.nerve) * 0.30
+        driver_pace += centered_driver(drv.mechanics) * (0.10 + min(0.52, strain * 0.050))
+        driver_pace += centered_driver(drv.aggression) * 0.27
+        driver_pace += centered_driver(drv.showmanship) * 0.28
+
+        # Aggression produces legal attacking pace as well as a separate chance
+        # of attracting warnings; Showmanship can generate momentum but asks more
+        # of the tyres. Neither is a free dump/stat.
+        attack_chance = max(5.0, min(45.0, 9.0 + drv.aggression * 3.2 + max(0.0, car.intimidation) * 1.0 + crew.attack_support * 2.0 + traits.attack * 2.0))
+        attack_bonus = 0.0
+        if self._roll(100) <= attack_chance:
+            attack_bonus = 0.65 + max(0.0, centered_driver(drv.aggression)) * 0.55 + max(0.0, car.intimidation - 2) * 0.10
+
+        show_bonus = 0.0
+        if self._roll(100) <= 7 + drv.showmanship * 2.8:
+            show_bonus = 0.45 + max(0.0, centered_driver(drv.showmanship)) * 0.35
+
+        late_bonus = traits.late_race if state.lap >= max(1, self.laps - 2) else 0.0
+        heat_after_crew = car.heat - crew.heat_control
+        heat_penalty = max(0.0, soft_stat(heat_after_crew)) * 0.34
+        strain_penalty = strain * 0.18
+        damage_penalty = state.damage * 0.075
+        tyre_penalty = state.tyre_wear * 0.055
+
+        return (
+            self._roll(20)
+            + car_pace
+            + driver_pace
+            + crew.strategy * 0.42
+            + crew.spotting * 0.16
+            + traits.pace
+            + late_bonus
+            + attack_bonus
+            + show_bonus
+            + state.momentum * 0.55
+            - heat_penalty
+            - strain_penalty
+            - damage_penalty
+            - tyre_penalty
+            - self._surface_roughness() * 0.22
+        )
+
+    def _lap_time(self, state: RaceState, pace: float) -> float:
+        base = 82.0 + self.track.corner_difficulty * 2.1 - self.track.straight_bias * 1.55
+        # High Nerve reduces inconsistency rather than simply adding raw pace.
+        variance_span = max(1.25, 3.2 - state.team.stats.nerve * 0.18)
+        variance = self.rng.uniform(-variance_span, variance_span + 0.7)
+        raw = base - pace * 0.43 + variance
+
+        # Smooth asymptotic floor: there is no hard 48-second cliff. Additional
+        # performance always helps, but returns become progressively smaller.
+        soft_floor = 42.0
+        delta = raw - soft_floor
+        if delta > 30:
+            time_delta = raw
+        elif delta < -30:
+            time_delta = soft_floor + math.exp(delta)
+        else:
+            time_delta = soft_floor + math.log1p(math.exp(delta))
         if state.dnf or state.disqualified:
             return 9999.0
         return time_delta
@@ -327,19 +429,38 @@ class RaceEngine:
             return
         car = self._track_adjusted_car_stats(state.team)
         drv = state.team.stats
+        crew = self._crew_effects(state.team)
+        traits = self._trait_effects(state.team)
+        strain = self._effective_strain(state.team)
+        heat_after_crew = max(0.0, car.heat - crew.heat_control)
         chance = (
             self._hazard_rate()
-            + max(0, state.tyre_wear - 55) // 5
-            + max(0, state.damage - 45) // 5
-            + max(0, car.heat)
-            - car.reliability
-            - drv.reflexes
+            + max(0, state.tyre_wear - 50) * 0.10
+            + max(0, state.damage - 40) * 0.08
+            + heat_after_crew * 0.45
+            + strain * 0.16
+            - soft_stat(car.reliability) * 0.55
+            - centered_driver(drv.reflexes) * 0.75
+            - centered_driver(drv.nerve) * 0.35
+            - crew.spotting * 0.55
+            - crew.repair * 0.18
+            - traits.hazard_save * 0.55
         )
-        chance = max(5, min(65, chance))
+        chance = max(3.0, min(55.0, chance))
         if self._roll(100) <= chance:
             hazard = self.rng.choice(self.track.hazard_names)
-            save = self._roll(20) + drv.handling + drv.reflexes + car.handling + car.braking - self.track.corner_difficulty
-            if save >= 19:
+            save = (
+                self._roll(20)
+                + soft_stat(car.handling) * 0.62
+                + soft_stat(car.braking) * 0.34
+                + drv.handling * 0.45
+                + drv.reflexes * 0.55
+                + drv.nerve * 0.18
+                + crew.spotting * 0.70
+                + traits.hazard_save
+                - self.track.corner_difficulty * 0.55
+            )
+            if save >= 18.0:
                 state.near_misses += 1
                 state.momentum += 1
                 self._comment(
@@ -356,7 +477,7 @@ class RaceEngine:
                     self._media_key("lap_save", state.car_colour),
                     actor=state,
                 )
-            elif save >= 12:
+            elif save >= 11.0:
                 state.crashes += 1
                 state.damage += self.rng.randint(3, 9)
                 state.tyre_wear += self.rng.randint(2, 6)
@@ -415,7 +536,17 @@ class RaceEngine:
             return
         car = self._track_adjusted_car_stats(state.team)
         drv = state.team.stats
-        dirty_chance = max(0, drv.aggression * 3 + car.intimidation - drv.nerve)
+        crew = self._crew_effects(state.team)
+        traits = self._trait_effects(state.team)
+        dirty_chance = (
+            0.8
+            + max(0, drv.aggression - 3) * 1.35
+            + max(0.0, car.intimidation - 4) * 0.35
+            + max(0.0, traits.illegal_risk)
+            - drv.nerve * 0.28
+            - max(0.0, crew.strategy) * 0.20
+        )
+        dirty_chance = max(0.2, min(18.0, dirty_chance))
         if self._roll(100) <= dirty_chance:
             rival = self._rival_for(state)
             rival_colour = rival.car_colour if rival else None
@@ -487,10 +618,22 @@ class RaceEngine:
             return
         car = self._track_adjusted_car_stats(state.team)
         drv = state.team.stats
+        crew = self._crew_effects(state.team)
+        traits = self._trait_effects(state.team)
+        strain = self._effective_strain(state.team)
         state.pit_stops += 1
-        pit_bonus = max(-6, min(14, (drv.mechanics + car.pit_friendliness + car.reliability) // 2))
+        pit_bonus = (
+            drv.mechanics * 0.72
+            + soft_stat(car.pit_friendliness) * 0.58
+            + soft_stat(car.reliability) * 0.20
+            + crew.pit_bonus
+            + crew.repair * 0.45
+            + traits.pit_bonus
+            - strain * 0.12
+        )
+        pit_bonus = max(-5.0, min(13.0, pit_bonus))
         pit_roll = self._roll(20) + pit_bonus - self._pit_difficulty()
-        time_cost = 9.0 + self._pit_difficulty() + self.rng.uniform(0, 6)
+        time_cost = 9.5 + self._pit_difficulty() + strain * 0.08 + self.rng.uniform(0, 5.5)
         media_key = self._media_key("pit_stop", state.car_colour)
         if pit_roll >= 22:
             fixed = self.rng.randint(22, 38)
@@ -620,15 +763,42 @@ class RaceEngine:
                 state.total_time += lap_time
                 state.lap = lap
                 car = self._track_adjusted_car_stats(state.team)
-                state.tyre_wear += max(1, self._surface_roughness() + self.rng.randint(1, 5) - car.handling // 2)
-                state.damage += max(
-                    0,
-                    self._surface_roughness() // 2
-                    + self.rng.randint(0, 2)
-                    + max(0, car.heat) // 4
-                    - car.durability // 3,
+                drv = state.team.stats
+                crew = self._crew_effects(state.team)
+                traits = self._trait_effects(state.team)
+                strain = self._effective_strain(state.team)
+
+                tyre_change = (
+                    self._surface_roughness() * 0.62
+                    + self.rng.randint(1, 4)
+                    - soft_stat(car.handling) * 0.22
+                    + strain * 0.10
+                    + max(0, drv.aggression - 4) * 0.15
+                    + max(0, drv.showmanship - 5) * 0.08
+                    - crew.tyre_care * 0.35
+                    - traits.tyre_care * 0.45
                 )
-                state.momentum = max(-3, min(4, state.momentum + self.rng.choice([-1, 0, 0, 1])))
+                state.tyre_wear += max(1, int(round(tyre_change)))
+
+                heat_after_crew = max(0.0, car.heat - crew.heat_control)
+                damage_change = (
+                    self._surface_roughness() * 0.28
+                    + self.rng.uniform(0.0, 1.7)
+                    + heat_after_crew * 0.14
+                    + strain * 0.075
+                    - soft_stat(car.durability) * 0.16
+                    - max(0, drv.mechanics - 4) * 0.08
+                    - max(0.0, crew.repair) * 0.10
+                )
+                state.damage += max(0, int(round(damage_change)))
+
+                momentum_delta = self.rng.choice([-1, 0, 0, 0, 1])
+                if self._roll(100) <= 5 + drv.showmanship * 2.4:
+                    momentum_delta += 1
+                    state.tyre_wear += 1
+                if lap >= self.laps - 1 and self._roll(100) <= 7 + drv.nerve * 2.0:
+                    momentum_delta += 1
+                state.momentum = max(-3, min(4, state.momentum + momentum_delta))
                 self._maybe_hazard(state, lap)
                 self._maybe_illegal_move(state, lap)
                 self._maybe_pit(state, lap)

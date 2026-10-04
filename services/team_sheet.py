@@ -188,7 +188,10 @@ def _draw_notes(draw, fonts, team: Team) -> None:
         if member:
             crew_lines.append(f"{slot.value.replace('_', ' ').title()}: {member.name}")
 
-    notes = crew_lines or ["No custom pit crew assigned yet."]
+    notes = [
+        f"Tune {BuildService.tuning_efficiency(team) * 100:.0f}% | Strain {BuildService.build_strain(team)} ({BuildService.build_strain_label(team)})",
+        *(crew_lines or ["No custom pit crew assigned yet."]),
+    ]
     illegal_risk = BuildService.illegal_disqualification_risk_percent(team)
     if illegal_risk:
         notes.append(f"Illegal parts risk: {illegal_risk}% DSQ per race")

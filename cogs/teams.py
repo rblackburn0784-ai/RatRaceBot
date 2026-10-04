@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import discord
 from discord import app_commands
@@ -11,6 +11,7 @@ from models.stats import DriverStats
 from services.access import deny_admin_only, is_admin
 from services.audit import audit_log
 from services.builds import BuildService, ILLEGAL_PART_DISQUALIFICATION_RISK
+from services.balance import crew_effect_for_member
 from services.crew_sheet import render_crew_sheet
 from services.engagement import available_titles_for_level, level_for_xp, progress_embed, sponsor_offers_embed, track_records_embed
 from services.formatting import Embeds
@@ -713,12 +714,15 @@ class PitCrewWizardView(discord.ui.View):
         embed.add_field(name="Assigned", value=_crew_label(current_key) if current_key else "Empty", inline=True)
         embed.add_field(name="Selected Member", value=selected.name if selected else "None", inline=True)
         if selected:
-            mods = ", ".join(f"{key.title()} {value:+d}" for key, value in selected.modifiers.as_dict().items() if value)
-            embed.add_field(name="Selected Member Effects", value=mods or "No stat modifiers", inline=False)
+            effects = crew_effect_for_member(selected)
+            effect_text = ", ".join(
+                f"{key.replace('_', ' ').title()} {value:+.1f}"
+                for key, value in asdict(effects).items()
+                if abs(value) >= 0.05
+            )
+            embed.add_field(name="Selected Member Specialist Effects", value=effect_text or "Situational support only", inline=False)
             embed.add_field(name="Crew Note", value=selected.description, inline=False)
-        crew_stats = BuildService.crew_stats(self.team)
-        crew_mods = ", ".join(f"{key.title()} {value:+d}" for key, value in crew_stats.as_dict().items() if value)
-        embed.add_field(name="Overall Crew Stats", value=crew_mods or "No crew stat modifiers yet.", inline=False)
+        embed.add_field(name="Combined Crew Specialist Effects", value=BuildService.crew_effect_summary(self.team), inline=False)
         if has_sheet:
             embed.set_image(url="attachment://pit_crew_wizard.png")
         else:

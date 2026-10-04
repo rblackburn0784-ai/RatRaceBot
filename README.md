@@ -9,8 +9,8 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - 64 custom rod parts: 8 each for engine, tyres, suspension, brakes, body, fuel, transmission, and trick slots.
 - Every part has positive and negative performance trade-offs, and each slot includes one marked illegal part.
 - Illegal parts add risk-versus-reward power: each illegal part adds +6% disqualification risk per race and is warned in the picker.
-- Custom pit crew loadouts with 5 crew positions, 5 selectable members per position, and crew stat buffs/debuffs.
-- Build stats use fair-play caps and one item per slot, so duplicate saved parts or runaway part/crew stacking cannot overpower the race engine.
+- Custom pit crew loadouts with 5 crew positions and 5 selectable specialists per position. Crew now affects role-specific race situations rather than permanently stacking car stats.
+- Build stats use one item per slot, Mechanical Strain, and tuning-efficiency diminishing returns so a fully loaded car gains options rather than becoming an automatic super-car.
 - 10 tracks with sharper positive and negative modifiers, lap events, surface hazards, corner difficulty, straight speed bias, and pit-lane difficulty.
 - 10-car races over 10 laps.
 - Semi-real-time race streaming with commentary, overtakes, accidents, pit stops, tyre wear, damage, illegal contact warnings, disqualifications, DNFs, and finish classification.
@@ -24,6 +24,20 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - Discord ownership controls: admins can use all commands, while regular drivers can create one linked team and manage only their own team/parts wizards.
 - Deterministic race seed plus full build/laps/damage replay snapshot saved for new races.
 - `/race_replay` is non-destructive: it does not duplicate career stats, XP, achievements, sponsors, fatigue, or track records.
+
+
+## v0.4.3 balance rules
+
+- All seven stock archetypes are calibrated against the complete 10-track schedule. The release Balance Lab target is **10-18% overall win rate per archetype** with equal drivers.
+- Lap time uses a smooth asymptotic floor instead of a hard 48-second cap, so extra performance always helps but delivers diminishing returns at extreme pace.
+- The six driver stats share a concave 24-point skill foundation, then specialise: Handling for corners, Reflexes for traffic/hazards, Nerve for consistency/clutch control, Mechanics for pit/strain management, Aggression for attacking pace with warning/tyre risk, and Showmanship for momentum with extra tyre demand.
+- Pit crews are specialists rather than a second permanent-stat stack: crew chiefs influence strategy, mechanics repair/strain, tyre changers wear/pits, fuel runners heat management, and spotters traffic/hazards.
+- Every legal part has at least one meaningful gain and one meaningful drawback. Several parts also have venue/weather specialisations, so Salt-Flat Skins, Dirt Track Treads, rain tyres, gearing and rough-track hardware change value by race.
+- **Mechanical Strain** rises with aggressive hardware. High strain adds heat/wear/reliability/pit pressure, while driver Mechanics and lead-mechanic support can partially manage it.
+- Fitting many parts also reduces **Tuning Efficiency**. Positive hardware bonuses receive diminishing returns as the car becomes more complicated; drawbacks remain fully active.
+- Illegal parts remain **+6% DSQ risk each**. A single illegal item is a risky shortcut; stacking multiple illegal systems also compounds Mechanical Strain.
+- Driver traits are contextual trade-offs rather than permanent raw-stat boosts.
+- `python tools/balance_lab.py` runs deterministic Monte Carlo balance checks over archetypes, driver builds, legal part slots, crew roles and a fully developed stress build. `--quick` provides a shorter smoke run.
 
 ## v0.4.2 reliability rules
 
@@ -61,6 +75,14 @@ Run:
 
 ```bash
 python main.py
+```
+
+Development / release checks:
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q
+python tools/balance_lab.py --quick
 ```
 
 ## Commands
@@ -187,4 +209,4 @@ The bot will send GIFs where available. Audio support is left as a hook: the cod
 
 ## Notes
 
-Current code version: **v0.4.2 — Race Rules, Tournament Integrity & Reliability**. The engine is intentionally readable, tunable, and deterministic. Balance values live in `data/defaults.py`. See `UPGRADE_v0.4.2.md` for upgrade notes.
+Current code version: **v0.4.3 — Balance & Competitive Integrity**. The engine is intentionally readable, tunable, deterministic, and protected by the Balance Lab plus regression tests. Core balance values live in `data/defaults.py` and `services/balance.py`. See `UPGRADE_v0.4.3.md` for upgrade notes.

@@ -3,6 +3,7 @@ from data.defaults import PARTS, TRACKS
 from models.domain import RaceResult, Team
 from models.enums import PartSlot
 from services.builds import BuildService
+from services.balance import part_strain
 
 STAT_LABELS = {
     "speed": "Spd",
@@ -29,8 +30,17 @@ class Embeds:
             f"Total: {team.stats.total}/24"
         ), inline=False)
         e.add_field(name="Effective Rod Stats", value="\n".join(f"{k.title()}: {v:+d}" for k, v in eff.as_dict().items()), inline=False)
+        e.add_field(
+            name="Tuning & Strain",
+            value=(
+                f"Tuning efficiency: **{BuildService.tuning_efficiency(team) * 100:.0f}%**\n"
+                f"Mechanical strain: **{BuildService.build_strain(team)} ({BuildService.build_strain_label(team)})**"
+            ),
+            inline=False,
+        )
         e.add_field(name="Parts", value=BuildService.part_summary(team), inline=False)
         e.add_field(name="Pit Crew Loadout", value=BuildService.crew_summary(team), inline=False)
+        e.add_field(name="Crew Specialist Effects", value=BuildService.crew_effect_summary(team), inline=False)
         illegal_risk = BuildService.illegal_disqualification_risk_percent(team)
         if illegal_risk:
             e.add_field(
@@ -64,7 +74,7 @@ class Embeds:
                     if value
                 )
                 marker = " [ILLEGAL +6% DSQ]" if BuildService.is_illegal_part_key(key) else ""
-                lines.append(f"`{key}` - {p.name}{marker}: {mods or 'No modifiers'}")
+                lines.append(f"`{key}` - {p.name}{marker}: {mods or 'No modifiers'} | Strain {part_strain(p)}")
             e.add_field(name=f"{slot.value.title()} Parts", value="\n".join(lines), inline=False)
         return e
 
