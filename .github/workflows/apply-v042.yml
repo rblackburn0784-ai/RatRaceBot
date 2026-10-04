@@ -23,16 +23,26 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           import base64, hashlib, lzma
-          chunks = sorted(Path('.rr-update').glob('chunk-*.b64'))
-          if len(chunks) != 5:
-              raise SystemExit(f'Expected 5 patch chunks, found {len(chunks)}')
-          encoded = ''.join(p.read_text(encoding='utf-8') for p in chunks)
+          names = [
+              'chunk-000a.b64', 'chunk-000b.b64',
+              'chunk-001.b64', 'chunk-002.b64', 'chunk-003.b64', 'chunk-004.b64'
+          ]
+          paths = [Path('.rr-update') / name for name in names]
+          missing = [str(p) for p in paths if not p.exists()]
+          if missing:
+              raise SystemExit(f'Missing patch chunks: {missing}')
+          encoded = ''.join(p.read_text(encoding='utf-8') for p in paths)
           payload = base64.b64decode(encoded, validate=True)
           expected = '4570715e4362abe42f94a0a5e048381c9b7a3c778bc5a028db4f30905ec0040a'
           actual = hashlib.sha256(payload).hexdigest()
           if actual != expected:
               raise SystemExit(f'Patch checksum mismatch: {actual}')
-          Path('/tmp/v042.patch').write_bytes(lzma.decompress(payload))
+          raw = lzma.decompress(payload)
+          raw_expected = 'ef44141b422e1876e0ef03ec16ca6bd8abcef3ca1253b0e5b3aa4b89af03dfbe'
+          raw_actual = hashlib.sha256(raw).hexdigest()
+          if raw_actual != raw_expected:
+              raise SystemExit(f'Raw patch checksum mismatch: {raw_actual}')
+          Path('/tmp/v042.patch').write_bytes(raw)
           PY
           git apply --check /tmp/v042.patch
           git apply /tmp/v042.patch
@@ -59,5 +69,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
+          git diff --cached --check
           git commit -m "Rat Rod Racing Bot v0.4.2 - Race Rules, Tournament Integrity & Reliability"
           git push origin HEAD:main
