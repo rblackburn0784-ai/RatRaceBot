@@ -32,12 +32,12 @@ jobs:
               raise SystemExit(f'Missing patch chunks: {missing}')
           encoded = ''.join(p.read_text(encoding='utf-8') for p in paths)
           payload = base64.b64decode(encoded, validate=True)
-          expected = 'f54722bc52c27ac84461ca89502bfd4445ae28ca340cbe48f2fea7bbbced67c0'
+          expected = 'd16638324a06cc1dcbece828208c73d25979c3f60cb5e0a13a03b016842252cf'
           actual = hashlib.sha256(payload).hexdigest()
           if actual != expected:
               raise SystemExit(f'Compressed patch checksum mismatch: {actual}')
           raw = lzma.decompress(payload)
-          raw_expected = 'b10ee9c7bf0efa9730204baa99f393ef822cae4910addeeab7970d6e96829203'
+          raw_expected = 'd88ee0050c1ffc33fc3235b5ac702c7dbd8bc26d8313d7b91c63aab3686e660d'
           raw_actual = hashlib.sha256(raw).hexdigest()
           if raw_actual != raw_expected:
               raise SystemExit(f'Raw patch checksum mismatch: {raw_actual}')
