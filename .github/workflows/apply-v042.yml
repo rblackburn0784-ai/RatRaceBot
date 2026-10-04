@@ -1,0 +1,63 @@
+name: Apply Rat Rod Racing Bot v0.4.2
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-update:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct and apply v0.4.2 patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import base64, hashlib, lzma
+          chunks = sorted(Path('.rr-update').glob('chunk-*.b64'))
+          if len(chunks) != 5:
+              raise SystemExit(f'Expected 5 patch chunks, found {len(chunks)}')
+          encoded = ''.join(p.read_text(encoding='utf-8') for p in chunks)
+          payload = base64.b64decode(encoded, validate=True)
+          expected = '4570715e4362abe42f94a0a5e048381c9b7a3c778bc5a028db4f30905ec0040a'
+          actual = hashlib.sha256(payload).hexdigest()
+          if actual != expected:
+              raise SystemExit(f'Patch checksum mismatch: {actual}')
+          Path('/tmp/v042.patch').write_bytes(lzma.decompress(payload))
+          PY
+          git apply --check /tmp/v042.patch
+          git apply /tmp/v042.patch
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+
+      - name: Verify v0.4.2
+        run: |
+          python -m compileall -q main.py config.py cogs services storage models data
+          pytest -q tests/test_v042_regressions.py
+
+      - name: Commit clean v0.4.2 source
+        shell: bash
+        run: |
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
+          find . -type f -name '*.pyc' -delete
+          rm -rf .rr-update
+          rm -f .github/workflows/apply-v042.yml
+          rmdir .github/workflows 2>/dev/null || true
+          rmdir .github 2>/dev/null || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Rat Rod Racing Bot v0.4.2 - Race Rules, Tournament Integrity & Reliability"
+          git push origin HEAD:main
