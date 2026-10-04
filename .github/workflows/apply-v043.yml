@@ -25,7 +25,7 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           import base64, hashlib, lzma
-          names = ['chunk-000.b64', 'chunk-001.b64']
+          names = [f'chunk-{i:03d}.b64' for i in range(8)]
           paths = [Path('.rr-update') / name for name in names]
           missing = [str(p) for p in paths if not p.exists()]
           if missing:
