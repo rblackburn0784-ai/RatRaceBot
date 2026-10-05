@@ -4,6 +4,8 @@ from models.domain import RaceResult, Team
 from models.enums import PartSlot
 from services.builds import BuildService
 from services.balance import part_strain
+from services.progression import LIVERIES, EMBLEMS, GARAGE_DECOR
+from services.sponsors import sponsor_by_key
 
 STAT_LABELS = {
     "speed": "Spd",
@@ -41,6 +43,20 @@ class Embeds:
         e.add_field(name="Parts", value=BuildService.part_summary(team), inline=False)
         e.add_field(name="Pit Crew Loadout", value=BuildService.crew_summary(team), inline=False)
         e.add_field(name="Crew Specialist Effects", value=BuildService.crew_effect_summary(team), inline=False)
+        option_name = lambda options, key: next((item.name for item in options if item.key == key), key)
+        sponsor = sponsor_by_key(team.active_sponsor_key)
+        e.add_field(
+            name="Team Identity",
+            value=(
+                f"Livery: **{option_name(LIVERIES, team.livery_key)}** | "
+                f"Emblem: **{option_name(EMBLEMS, team.emblem_key)}**\n"
+                f"Garage: **{option_name(GARAGE_DECOR, team.garage_decor_key)}** | "
+                f"Sponsor: **{sponsor.name if sponsor else 'Independent'}**"
+            ),
+            inline=False,
+        )
+        if team.intro_phrase:
+            e.add_field(name="Race Intro", value=team.intro_phrase[:1024], inline=False)
         illegal_risk = BuildService.illegal_disqualification_risk_percent(team)
         if illegal_risk:
             e.add_field(

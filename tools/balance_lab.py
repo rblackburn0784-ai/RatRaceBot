@@ -18,6 +18,7 @@ from models.stats import DriverStats
 from services.balance import build_strain, crew_effects, part_strain
 from services.builds import BuildService
 from services.race_engine import RaceEngine
+from services.sponsors import SPONSORS
 
 BALANCE_TARGETS = {
     "stock_archetype_min": 10.0,
@@ -26,6 +27,7 @@ BALANCE_TARGETS = {
     "developed_team_win_max": 35.0,
     "legal_part_slot_win_max": 30.0,
     "crew_member_win_max": 25.0,
+    "sponsor_win_max": 25.0,
 }
 
 DRIVER_PROFILES = {
@@ -67,6 +69,7 @@ def _team(
     stats: DriverStats | None = None,
     parts: list[str] | None = None,
     crew: dict[str, str] | None = None,
+    active_sponsor_key: str | None = None,
 ) -> Team:
     return Team(
         id=team_id,
@@ -79,6 +82,7 @@ def _team(
         parts=list(parts or []),
         owner_user_id=None,
         crew=dict(crew or {}),
+        active_sponsor_key=active_sponsor_key,
     )
 
 
@@ -242,6 +246,34 @@ def crew_slot_win_rates(races_per_track: int = 35) -> dict[str, dict[str, float]
     return report
 
 
+
+def sponsor_win_rates(races_per_track: int = 50) -> dict[str, float]:
+    rates: dict[str, float] = {}
+    for sponsor_key in SPONSORS:
+        wins = 0
+        races = 0
+        for track_key in TRACKS:
+            for race_index in range(races_per_track):
+                teams = [
+                    _team(
+                        index + 1,
+                        f"sponsor-{sponsor_key}-{track_key}-{race_index}-{index}",
+                        active_sponsor_key=sponsor_key if index == 0 else None,
+                    )
+                    for index in range(10)
+                ]
+                _, results, _ = RaceEngine(
+                    track_key,
+                    teams,
+                    seed=f"balance-sponsor-{sponsor_key}-{track_key}-{race_index}",
+                    laps=10,
+                ).run()
+                winner = _winner(results)
+                wins += int(bool(winner and winner.team_id == 1))
+                races += 1
+        rates[sponsor_key] = wins * 100.0 / races
+    return rates
+
 def legal_part_tradeoff_failures() -> list[str]:
     failures = []
     for key, part in PARTS.items():
@@ -295,6 +327,10 @@ def validate_report(report: dict) -> list[str]:
         if rates and max(rates.values()) > BALANCE_TARGETS["crew_member_win_max"]:
             failures.append(f"crew slot {slot} has dominant option: {max(rates.values()):.2f}%")
 
+    for sponsor_key, rate in report["sponsors"].items():
+        if rate > BALANCE_TARGETS["sponsor_win_max"]:
+            failures.append(f"sponsor {sponsor_key} dominates stock controls: {rate:.2f}%")
+
     failures.extend(f"legal part lacks tradeoff: {key}" for key in report["structural"]["legal_part_tradeoff_failures"])
     return failures
 
@@ -306,6 +342,7 @@ def run_lab(races_per_track: int = 120, slot_races_per_track: int = 35) -> dict:
         "developed_team_win_rate": developed_team_win_rate(races_per_track),
         "legal_parts": legal_part_slot_win_rates(slot_races_per_track),
         "crew": crew_slot_win_rates(slot_races_per_track),
+        "sponsors": sponsor_win_rates(max(20, races_per_track // 2)),
         "structural": structural_report(),
     }
     report["failures"] = validate_report(report)
@@ -313,7 +350,7 @@ def run_lab(races_per_track: int = 120, slot_races_per_track: int = 35) -> dict:
 
 
 def _print_report(report: dict) -> None:
-    print("Rat Rod Racing Bot v0.4.5 Balance Lab (v0.4.3 balance baseline)")
+    print("Rat Rod Racing Bot v0.4.6 Balance Lab (v0.4.3 balance baseline + sponsor guardrails)")
     print("\nStock archetype win rates")
     for name, rate in report["stock_archetypes"].items():
         print(f"  {name:16} {rate:6.2f}%")
@@ -333,6 +370,10 @@ def _print_report(report: dict) -> None:
     for slot, rates in report["crew"].items():
         key, rate = max(rates.items(), key=lambda item: item[1])
         print(f"  {slot:14} {key:28} {rate:6.2f}%")
+
+    print("\nSponsor solo win rates vs nine independent controls")
+    for key, rate in report["sponsors"].items():
+        print(f"  {key:22} {rate:6.2f}%")
 
     structural = report["structural"]
     print(

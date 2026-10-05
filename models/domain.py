@@ -63,6 +63,11 @@ class Team:
     parts: list[str] = field(default_factory=list)
     owner_user_id: int | None = None
     crew: dict[str, str] = field(default_factory=dict)
+    active_sponsor_key: str | None = None
+    livery_key: str = "bare_primer"
+    emblem_key: str = "rat_skull"
+    garage_decor_key: str = "oil_stained_bench"
+    intro_phrase: str = ""
 
 @dataclass(slots=True)
 class RaceEvent:

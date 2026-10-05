@@ -19,6 +19,7 @@ from services.balance import (
 )
 from services.race_presentation_core import leaderboard_snapshot, phase_for_lap
 from services.garage import crew_contributors
+from services.sponsors import sponsor_by_key
 
 CAR_COLOURS = (
     "red",
@@ -286,6 +287,9 @@ class RaceEngine:
         contributors = crew_contributors(actor.team, purpose) if purpose else []
         if contributors:
             reason += " Crew contribution: " + ", ".join(contributors) + "."
+        sponsor = self._sponsor(actor.team)
+        if sponsor:
+            reason += f" Sponsor influence: {sponsor.name} — {sponsor.benefit_text} Trade-off: {sponsor.drawback_text}"
         return reason
 
     def _comment(
@@ -302,6 +306,10 @@ class RaceEngine:
         event_context = dict(context or {})
         event_context.setdefault("phase", phase_for_lap(lap, self.laps))
         event_context.setdefault("laps", self.laps)
+        if actor:
+            sponsor = self._sponsor(actor.team)
+            if sponsor:
+                event_context.setdefault("sponsor", sponsor.name)
         reason = self._event_reason(event_type, actor)
         if reason:
             event_context.setdefault("why", reason)
@@ -370,6 +378,9 @@ class RaceEngine:
             self._trait_cache[key] = trait_effects(team, self.track, self.weather)
         return self._trait_cache[key]
 
+    def _sponsor(self, team: Team):
+        return sponsor_by_key(getattr(team, "active_sponsor_key", None))
+
     def _effective_strain(self, team: Team) -> float:
         key = self._team_cache_key(team)
         if key not in self._strain_cache:
@@ -402,6 +413,7 @@ class RaceEngine:
         crew = self._crew_effects(state.team)
         traits = self._trait_effects(state.team)
         strain = self._effective_strain(state.team)
+        sponsor = self._sponsor(state.team)
 
         straight = self.track.straight_bias / 6.0
         corner = self.track.corner_difficulty / 6.0
@@ -443,6 +455,10 @@ class RaceEngine:
             show_bonus = 0.45 + max(0.0, centered_driver(drv.showmanship)) * 0.35
 
         late_bonus = traits.late_race if state.lap >= max(1, self.laps - 2) else 0.0
+        sponsor_pace = 0.0
+        if sponsor:
+            sponsor_pace += sponsor.opening_pace_bonus if state.lap <= 2 else 0.0
+            sponsor_pace -= sponsor.pace_penalty
         heat_after_crew = car.heat - crew.heat_control
         heat_penalty = max(0.0, soft_stat(heat_after_crew)) * 0.34
         strain_penalty = strain * 0.18
@@ -460,6 +476,7 @@ class RaceEngine:
             + attack_bonus
             + show_bonus
             + state.momentum * 0.55
+            + sponsor_pace
             - heat_penalty
             - strain_penalty
             - damage_penalty
@@ -496,7 +513,8 @@ class RaceEngine:
         crew = self._crew_effects(state.team)
         traits = self._trait_effects(state.team)
         strain = self._effective_strain(state.team)
-        heat_after_crew = max(0.0, car.heat - crew.heat_control)
+        sponsor = self._sponsor(state.team)
+        heat_after_crew = max(0.0, car.heat - crew.heat_control) + (sponsor.heat_pressure if sponsor else 0.0)
         chance = (
             self._hazard_rate()
             + max(0, state.tyre_wear - 50) * 0.10
@@ -522,6 +540,7 @@ class RaceEngine:
                 + drv.nerve * 0.18
                 + crew.spotting * 0.70
                 + traits.hazard_save
+                + (sponsor.hazard_save_bonus if sponsor else 0.0)
                 - self.track.corner_difficulty * 0.55
             )
             if save >= 18.0:
@@ -652,6 +671,10 @@ class RaceEngine:
 
     def _maybe_illegal_scrutineering(self, state: RaceState) -> None:
         risk = BuildService.illegal_disqualification_risk_percent(state.team)
+        sponsor = self._sponsor(state.team)
+        if risk > 0 and sponsor:
+            risk += sponsor.illegal_scrutiny_bonus
+        risk = min(95, risk)
         if state.dnf or state.disqualified or risk <= 0:
             return
         if self._roll(100) <= risk:
@@ -685,6 +708,7 @@ class RaceEngine:
         crew = self._crew_effects(state.team)
         traits = self._trait_effects(state.team)
         strain = self._effective_strain(state.team)
+        sponsor = self._sponsor(state.team)
         state.pit_stops += 1
         position_before = state.position
         damage_before = state.damage
@@ -701,9 +725,11 @@ class RaceEngine:
         pit_bonus = max(-5.0, min(13.0, pit_bonus))
         pit_roll = self._roll(20) + pit_bonus - self._pit_difficulty()
         time_cost = 9.5 + self._pit_difficulty() + strain * 0.08 + self.rng.uniform(0, 5.5)
+        if sponsor and sponsor.pit_time_variance:
+            time_cost += self.rng.uniform(-sponsor.pit_time_variance, sponsor.pit_time_variance + 1.0)
         media_key = self._media_key("pit_stop", state.car_colour)
         if pit_roll >= 22:
-            fixed = self.rng.randint(22, 38)
+            fixed = self.rng.randint(22, 38) + (sponsor.pit_repair_bonus if sponsor else 0)
             tyres = self.rng.randint(35, 55)
             state.damage = max(0, state.damage - fixed)
             state.tyre_wear = max(0, state.tyre_wear - tyres)
@@ -727,7 +753,7 @@ class RaceEngine:
                 context={"pit_quality": "Fast", "time_cost": round(actual_cost, 2)},
             )
         elif pit_roll >= 12:
-            fixed = self.rng.randint(10, 24)
+            fixed = self.rng.randint(10, 24) + (sponsor.pit_repair_bonus if sponsor else 0)
             tyres = self.rng.randint(20, 40)
             state.damage = max(0, state.damage - fixed)
             state.tyre_wear = max(0, state.tyre_wear - tyres)
@@ -751,7 +777,7 @@ class RaceEngine:
                 context={"pit_quality": "Solid", "time_cost": round(actual_cost, 2)},
             )
         else:
-            fixed = self.rng.randint(0, 10)
+            fixed = self.rng.randint(0, 10) + ((sponsor.pit_repair_bonus // 2) if sponsor else 0)
             state.damage = max(0, state.damage - fixed)
             actual_cost = time_cost + 12
             state.total_time += actual_cost
@@ -816,6 +842,7 @@ class RaceEngine:
         colour_lines = "\n".join(
             f"{self._colour_label(s)} — **{s.team.name}** ({s.team.driver_name}) in *{s.team.car_name}*"
             f"{f' — {s.starting_damage}% carryover damage' if s.starting_damage else ''}"
+            f"{f' — “{s.team.intro_phrase}”' if s.team.intro_phrase else ''}"
             for s in self.states
         )
         self._comment(
@@ -851,6 +878,7 @@ class RaceEngine:
                 crew = self._crew_effects(state.team)
                 traits = self._trait_effects(state.team)
                 strain = self._effective_strain(state.team)
+                sponsor = self._sponsor(state.team)
 
                 tyre_change = (
                     self._surface_roughness() * 0.62
@@ -861,10 +889,11 @@ class RaceEngine:
                     + max(0, drv.showmanship - 5) * 0.08
                     - crew.tyre_care * 0.35
                     - traits.tyre_care * 0.45
+                    + (sponsor.tyre_wear_pressure if sponsor else 0.0)
                 )
                 state.tyre_wear += max(1, int(round(tyre_change)))
 
-                heat_after_crew = max(0.0, car.heat - crew.heat_control)
+                heat_after_crew = max(0.0, car.heat - crew.heat_control) + (sponsor.heat_pressure if sponsor else 0.0)
                 damage_change = (
                     self._surface_roughness() * 0.28
                     + self.rng.uniform(0.0, 1.7)
@@ -877,7 +906,7 @@ class RaceEngine:
                 state.damage += max(0, int(round(damage_change)))
 
                 momentum_delta = self.rng.choice([-1, 0, 0, 0, 1])
-                if self._roll(100) <= 5 + drv.showmanship * 2.4:
+                if self._roll(100) <= 5 + drv.showmanship * 2.4 + (sponsor.momentum_chance_bonus if sponsor else 0.0):
                     momentum_delta += 1
                     state.tyre_wear += 1
                 if lap >= self.laps - 1 and self._roll(100) <= 7 + drv.nerve * 2.0:

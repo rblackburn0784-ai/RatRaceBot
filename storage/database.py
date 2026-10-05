@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS teams (
     stats_json TEXT NOT NULL,
     parts_json TEXT NOT NULL DEFAULT '[]',
     owner_user_id INTEGER,
-    crew_json TEXT NOT NULL DEFAULT '{}'
+    crew_json TEXT NOT NULL DEFAULT '{}',
+    active_sponsor_key TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tournaments (
@@ -140,8 +141,18 @@ CREATE TABLE IF NOT EXISTS sponsor_offers (
     sponsor_name TEXT NOT NULL,
     benefit_text TEXT NOT NULL,
     drawback_text TEXT NOT NULL,
+    sponsor_key TEXT,
     status TEXT NOT NULL DEFAULT 'offered',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS team_identity (
+    team_id INTEGER PRIMARY KEY,
+    livery_key TEXT NOT NULL DEFAULT 'bare_primer',
+    emblem_key TEXT NOT NULL DEFAULT 'rat_skull',
+    garage_decor_key TEXT NOT NULL DEFAULT 'oil_stained_bench',
+    intro_phrase TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS team_fatigue (
@@ -208,6 +219,8 @@ class Database:
             conn.execute("ALTER TABLE teams ADD COLUMN owner_user_id INTEGER")
         if "crew_json" not in team_columns:
             conn.execute("ALTER TABLE teams ADD COLUMN crew_json TEXT NOT NULL DEFAULT '{}'")
+        if "active_sponsor_key" not in team_columns:
+            conn.execute("ALTER TABLE teams ADD COLUMN active_sponsor_key TEXT")
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_owner_user_id ON teams(owner_user_id) WHERE owner_user_id IS NOT NULL"
         )
@@ -344,6 +357,7 @@ class Database:
                 sponsor_name TEXT NOT NULL,
                 benefit_text TEXT NOT NULL,
                 drawback_text TEXT NOT NULL,
+                sponsor_key TEXT,
                 status TEXT NOT NULL DEFAULT 'offered',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
@@ -352,6 +366,20 @@ class Database:
         sponsor_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sponsor_offers)").fetchall()}
         if "status" not in sponsor_columns:
             conn.execute("ALTER TABLE sponsor_offers ADD COLUMN status TEXT NOT NULL DEFAULT 'offered'")
+        if "sponsor_key" not in sponsor_columns:
+            conn.execute("ALTER TABLE sponsor_offers ADD COLUMN sponsor_key TEXT")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS team_identity (
+                team_id INTEGER PRIMARY KEY,
+                livery_key TEXT NOT NULL DEFAULT 'bare_primer',
+                emblem_key TEXT NOT NULL DEFAULT 'rat_skull',
+                garage_decor_key TEXT NOT NULL DEFAULT 'oil_stained_bench',
+                intro_phrase TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS team_fatigue (
@@ -442,18 +470,34 @@ class Database:
             parts=json.loads(row["parts_json"]),
             owner_user_id=row["owner_user_id"] if "owner_user_id" in row.keys() else None,
             crew=json.loads(row["crew_json"]) if "crew_json" in row.keys() else {},
+            active_sponsor_key=row["active_sponsor_key"] if "active_sponsor_key" in row.keys() else None,
+            livery_key=row["livery_key"] if "livery_key" in row.keys() and row["livery_key"] else "bare_primer",
+            emblem_key=row["emblem_key"] if "emblem_key" in row.keys() and row["emblem_key"] else "rat_skull",
+            garage_decor_key=row["garage_decor_key"] if "garage_decor_key" in row.keys() and row["garage_decor_key"] else "oil_stained_bench",
+            intro_phrase=row["intro_phrase"] if "intro_phrase" in row.keys() and row["intro_phrase"] else "",
         )
 
     async def get_team(self, team_id: int) -> Team | None:
-        row = await self.fetchone("SELECT * FROM teams WHERE id=?", (team_id,))
+        row = await self.fetchone(
+            """SELECT t.*, ti.livery_key, ti.emblem_key, ti.garage_decor_key, ti.intro_phrase
+               FROM teams t LEFT JOIN team_identity ti ON ti.team_id=t.id WHERE t.id=?""",
+            (team_id,),
+        )
         return self.row_to_team(row) if row else None
 
     async def list_teams(self) -> list[Team]:
-        rows = await self.fetchall("SELECT * FROM teams ORDER BY id")
+        rows = await self.fetchall(
+            """SELECT t.*, ti.livery_key, ti.emblem_key, ti.garage_decor_key, ti.intro_phrase
+               FROM teams t LEFT JOIN team_identity ti ON ti.team_id=t.id ORDER BY t.id"""
+        )
         return [self.row_to_team(r) for r in rows]
 
     async def get_team_by_owner(self, owner_user_id: int) -> Team | None:
-        row = await self.fetchone("SELECT * FROM teams WHERE owner_user_id=?", (owner_user_id,))
+        row = await self.fetchone(
+            """SELECT t.*, ti.livery_key, ti.emblem_key, ti.garage_decor_key, ti.intro_phrase
+               FROM teams t LEFT JOIN team_identity ti ON ti.team_id=t.id WHERE t.owner_user_id=?""",
+            (owner_user_id,),
+        )
         return self.row_to_team(row) if row else None
 
     async def update_team_profile(self, team: Team) -> None:
@@ -519,6 +563,7 @@ class Database:
                 conn.execute("DELETE FROM team_progress WHERE team_id=?", (team_id,))
                 conn.execute("DELETE FROM team_achievements WHERE team_id=?", (team_id,))
                 conn.execute("DELETE FROM sponsor_offers WHERE team_id=?", (team_id,))
+                conn.execute("DELETE FROM team_identity WHERE team_id=?", (team_id,))
                 conn.execute("DELETE FROM team_fatigue WHERE team_id=?", (team_id,))
                 conn.execute("DELETE FROM team_setups WHERE team_id=?", (team_id,))
                 conn.execute(
@@ -984,7 +1029,6 @@ class Database:
                         VALUES (?, ?, ?)
                         ON CONFLICT(team_id) DO UPDATE SET
                             xp = xp + excluded.xp,
-                            cosmetic_title = excluded.cosmetic_title,
                             updated_at = CURRENT_TIMESTAMP
                         """,
                         (int(update["team_id"]), int(update["xp"]), str(update["cosmetic_title"])),
@@ -1000,9 +1044,20 @@ class Database:
                         new_achievements.append(dict(achievement))
 
                 for offer in sponsor_offers:
+                    team_id = int(offer["team_id"])
+                    sponsor_key = offer.get("sponsor_key")
+                    active = conn.execute("SELECT active_sponsor_key FROM teams WHERE id=?", (team_id,)).fetchone()
+                    if active and sponsor_key and active["active_sponsor_key"] == sponsor_key:
+                        continue
+                    duplicate = conn.execute(
+                        "SELECT 1 FROM sponsor_offers WHERE team_id=? AND sponsor_key=? AND status='offered' LIMIT 1",
+                        (team_id, sponsor_key),
+                    ).fetchone() if sponsor_key else None
+                    if duplicate:
+                        continue
                     conn.execute(
-                        "INSERT INTO sponsor_offers(team_id, sponsor_name, benefit_text, drawback_text) VALUES (?, ?, ?, ?)",
-                        (int(offer["team_id"]), offer["sponsor_name"], offer["benefit"], offer["drawback"]),
+                        "INSERT INTO sponsor_offers(team_id, sponsor_name, benefit_text, drawback_text, sponsor_key) VALUES (?, ?, ?, ?, ?)",
+                        (team_id, offer["sponsor_name"], offer["benefit"], offer["drawback"], sponsor_key),
                     )
 
                 for fatigue in fatigue_updates:
@@ -1475,13 +1530,13 @@ class Database:
             (team_id,),
         )
 
-    async def create_sponsor_offer(self, team_id: int, sponsor_name: str, benefit_text: str, drawback_text: str) -> int:
+    async def create_sponsor_offer(self, team_id: int, sponsor_name: str, benefit_text: str, drawback_text: str, sponsor_key: str | None = None) -> int:
         cur = await self.execute(
             """
-            INSERT INTO sponsor_offers(team_id, sponsor_name, benefit_text, drawback_text)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO sponsor_offers(team_id, sponsor_name, benefit_text, drawback_text, sponsor_key)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (team_id, sponsor_name, benefit_text, drawback_text),
+            (team_id, sponsor_name, benefit_text, drawback_text, sponsor_key),
         )
         return int(cur.lastrowid)
 
@@ -1503,6 +1558,78 @@ class Database:
         if status not in {"offered", "accepted", "rejected"}:
             raise ValueError("Unsupported sponsor offer status.")
         await self.execute("UPDATE sponsor_offers SET status=? WHERE id=?", (status, offer_id))
+
+    async def accept_sponsor_offer(self, team_id: int, offer_id: int) -> str:
+        from services.sponsors import sponsor_key_by_name
+        async with self.lock:
+            conn = self._require()
+            try:
+                conn.execute("BEGIN")
+                offer = conn.execute("SELECT * FROM sponsor_offers WHERE id=? AND team_id=?", (offer_id, team_id)).fetchone()
+                if not offer or offer["status"] != "offered":
+                    raise ValueError("That sponsor offer is no longer available.")
+                current = conn.execute("SELECT active_sponsor_key FROM teams WHERE id=?", (team_id,)).fetchone()
+                if not current:
+                    raise ValueError("Team not found.")
+                if current["active_sponsor_key"]:
+                    raise ValueError("End the current sponsor contract before accepting another.")
+                key = offer["sponsor_key"] if "sponsor_key" in offer.keys() and offer["sponsor_key"] else sponsor_key_by_name(offer["sponsor_name"])
+                if not key:
+                    raise ValueError("That legacy sponsor offer cannot be activated; reject it and earn a new offer.")
+                from services.sponsors import sponsor_by_key
+                from services.progression import level_for_xp
+                sponsor = sponsor_by_key(key)
+                progress = conn.execute("SELECT xp FROM team_progress WHERE team_id=?", (team_id,)).fetchone()
+                level = level_for_xp(int(progress["xp"]) if progress else 0)
+                if sponsor and level < sponsor.min_level:
+                    raise ValueError(f"{sponsor.name} requires team Level {sponsor.min_level}.")
+                conn.execute("UPDATE teams SET active_sponsor_key=? WHERE id=?", (key, team_id))
+                conn.execute("UPDATE sponsor_offers SET status='accepted' WHERE id=?", (offer_id,))
+                conn.commit()
+                return str(key)
+            except Exception:
+                conn.rollback()
+                raise
+
+    async def end_sponsor_contract(self, team_id: int) -> None:
+        await self.execute("UPDATE teams SET active_sponsor_key=NULL WHERE id=?", (team_id,))
+
+    async def team_identity(self, team_id: int) -> sqlite3.Row | None:
+        return await self.fetchone("SELECT * FROM team_identity WHERE team_id=?", (team_id,))
+
+    async def update_team_identity(
+        self, team_id: int, *, livery_key: str | None = None, emblem_key: str | None = None,
+        garage_decor_key: str | None = None, intro_phrase: str | None = None,
+    ) -> sqlite3.Row:
+        current = await self.team_identity(team_id)
+        values = {
+            "livery_key": current["livery_key"] if current else "bare_primer",
+            "emblem_key": current["emblem_key"] if current else "rat_skull",
+            "garage_decor_key": current["garage_decor_key"] if current else "oil_stained_bench",
+            "intro_phrase": current["intro_phrase"] if current else "",
+        }
+        if livery_key is not None:
+            values["livery_key"] = livery_key
+        if emblem_key is not None:
+            values["emblem_key"] = emblem_key
+        if garage_decor_key is not None:
+            values["garage_decor_key"] = garage_decor_key
+        if intro_phrase is not None:
+            values["intro_phrase"] = intro_phrase[:160]
+        await self.execute(
+            """
+            INSERT INTO team_identity(team_id, livery_key, emblem_key, garage_decor_key, intro_phrase)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(team_id) DO UPDATE SET
+                livery_key=excluded.livery_key, emblem_key=excluded.emblem_key,
+                garage_decor_key=excluded.garage_decor_key, intro_phrase=excluded.intro_phrase,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (team_id, values["livery_key"], values["emblem_key"], values["garage_decor_key"], values["intro_phrase"]),
+        )
+        row = await self.team_identity(team_id)
+        assert row is not None
+        return row
 
     async def get_race(self, race_id: int) -> sqlite3.Row | None:
         return await self.fetchone("SELECT * FROM races WHERE id=?", (race_id,))

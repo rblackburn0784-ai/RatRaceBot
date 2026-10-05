@@ -7,6 +7,7 @@ from models.domain import RaceEvent, RaceResult, Team, Track, WeatherCondition
 from models.enums import EventType
 from services.balance import TRACK_SPECIALISATIONS, effective_strain, track_part_adjustment
 from services.builds import BuildService
+from services.sponsors import sponsor_by_key
 from services.race_rules import is_official_finisher
 from services.race_presentation_core import PHASE_LABELS, leaderboard_checkpoints, phase_for_lap, phase_label
 
@@ -103,6 +104,10 @@ def team_setup_summary(team: Team, track: Track, weather: WeatherCondition, carr
     ]
     if carryover_damage:
         lines.append(f"Carryover damage: **{carryover_damage}%**")
+    sponsor = sponsor_by_key(team.active_sponsor_key)
+    if sponsor:
+        lines.append(f"Sponsor: **{sponsor.name}** — {sponsor.benefit_text}")
+        lines.append(f"Sponsor trade-off: {sponsor.drawback_text}")
     lines.extend(setup_notes(team, track, weather))
     return "\n".join(lines)[:1024]
 

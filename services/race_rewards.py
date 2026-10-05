@@ -13,6 +13,7 @@ from services.engagement import (
     xp_for_result,
 )
 from services.race_rules import is_official_finisher, official_podium, official_winner
+from services.sponsors import sponsor_by_key
 
 
 async def process_race_rewards(
@@ -32,6 +33,8 @@ async def process_race_rewards(
     achievements: list[dict] = []
     sponsor_updates: list[dict] = []
     fatigue_updates: list[dict] = []
+    level_ups: list[dict] = []
+    levels_by_team: dict[int, int] = {}
 
     official_podium_ids = {result.team_id for result in official_podium(saved_results)}
 
@@ -39,8 +42,14 @@ async def process_race_rewards(
         team = teams_by_id[result.team_id]
         current_progress = await db.team_progress(team.id)
         current_xp = int(current_progress["xp"]) if current_progress else 0
-        gained_xp = xp_for_result(result)
+        base_xp = xp_for_result(result)
+        active_sponsor = sponsor_by_key(team.active_sponsor_key)
+        gained_xp = max(1, int(round(base_xp * (active_sponsor.xp_multiplier if active_sponsor else 1.0))))
+        old_level = level_for_xp(current_xp)
         new_level = level_for_xp(current_xp + gained_xp)
+        levels_by_team[team.id] = new_level
+        if new_level > old_level:
+            level_ups.append({"team_id": team.id, "team_name": team.name, "old_level": old_level, "new_level": new_level})
         xp_updates.append(
             {
                 "team_id": team.id,
@@ -58,11 +67,12 @@ async def process_race_rewards(
             achievements.append({"team_id": team.id, "team_name": team.name, "key": key, "name": name})
 
         if result.team_id in official_podium_ids:
-            sponsor_name, benefit, drawback = sponsor_offer(team, race_id)
+            sponsor_key, sponsor_name, benefit, drawback = sponsor_offer(team, race_id, new_level)
             sponsor_updates.append(
                 {
                     "team_id": team.id,
                     "team_name": team.name,
+                    "sponsor_key": sponsor_key,
                     "sponsor_name": sponsor_name,
                     "benefit": benefit,
                     "drawback": drawback,
@@ -103,12 +113,31 @@ async def process_race_rewards(
         embeds.append(embed)
 
     embeds.append(hype_embed(results, events, title))
-    embeds.append(newspaper_embed(results, title, TRACKS[track_key].name, weather_name))
-
+    gazette = newspaper_embed(results, title, TRACKS[track_key].name, weather_name)
     winner = official_winner(results)
+    if winner and levels_by_team.get(winner.team_id, 1) >= 5:
+        gazette.add_field(
+            name="Established Name",
+            value=f"**{winner.team_name}** has enough paddock reputation to earn featured Blacktop Gazette coverage.",
+            inline=False,
+        )
+    embeds.append(gazette)
+
     winner_team = teams_by_id.get(winner.team_id) if winner else None
     if winner and winner_team:
         embeds.append(interview_embed(winner_team, winner, await db.team_profile(winner.team_id)))
+
+    if processing.get("processed") and level_ups:
+        embed = discord.Embed(title="Team Level Up", color=discord.Color.gold())
+        embed.add_field(
+            name="Progression Unlocks",
+            value="\n".join(
+                f"**{item['team_name']}** reached **Level {item['new_level']}** — new identity/setup/sponsor options may be available."
+                for item in level_ups[:10]
+            ),
+            inline=False,
+        )
+        embeds.append(embed)
 
     new_achievements = processing.get("new_achievements", [])
     if new_achievements:

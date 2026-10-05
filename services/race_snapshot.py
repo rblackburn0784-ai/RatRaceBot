@@ -22,6 +22,11 @@ def team_to_snapshot(team: Team) -> dict[str, Any]:
         "parts": list(team.parts),
         "owner_user_id": team.owner_user_id,
         "crew": dict(team.crew),
+        "active_sponsor_key": team.active_sponsor_key,
+        "livery_key": team.livery_key,
+        "emblem_key": team.emblem_key,
+        "garage_decor_key": team.garage_decor_key,
+        "intro_phrase": team.intro_phrase,
     }
 
 
@@ -37,6 +42,11 @@ def team_from_snapshot(data: dict[str, Any]) -> Team:
         parts=[str(key) for key in data.get("parts", [])],
         owner_user_id=int(data["owner_user_id"]) if data.get("owner_user_id") is not None else None,
         crew={str(key): str(value) for key, value in dict(data.get("crew", {})).items()},
+        active_sponsor_key=str(data["active_sponsor_key"]) if data.get("active_sponsor_key") else None,
+        livery_key=str(data.get("livery_key") or "bare_primer"),
+        emblem_key=str(data.get("emblem_key") or "rat_skull"),
+        garage_decor_key=str(data.get("garage_decor_key") or "oil_stained_bench"),
+        intro_phrase=str(data.get("intro_phrase") or ""),
     )
 
 

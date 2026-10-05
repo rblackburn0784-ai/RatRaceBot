@@ -9,6 +9,8 @@ from models.enums import EventType
 from services.race_rules import is_official_finisher, official_winner
 from models.stats import CarStats
 from services.story import reputation_tags
+from services.progression import level_for_xp, unlock_lines, next_unlock
+from services.sponsors import sponsor_by_key, sponsors_for_level
 
 
 @dataclass(frozen=True)
@@ -30,7 +32,6 @@ DRIVER_TRAITS = (
     DriverTrait("showboat", "Showboat", "The crowd loves it. The stopwatch sometimes does.", CarStats(intimidation=1, heat=1, reliability=-1)),
 )
 
-XP_BY_LEVEL = 100
 COSMETIC_TITLES = {
     1: "Garage Rookie",
     2: "Backroad Regular",
@@ -41,13 +42,6 @@ COSMETIC_TITLES = {
     10: "Legend In Primer",
 }
 
-SPONSORS = (
-    ("Moonshine Fuel Co.", "+1 acceleration flavor for the next feature", "Officials sniff the tank twice."),
-    ("Lucky 13 Speed Shop", "Fresh decals and a louder intro", "The car attracts extra attention."),
-    ("Whitewall Radio Hour", "Custom victory shout-out", "Showboating expectations rise."),
-    ("Graveyard Wrench Supply", "Pit crew gets shiny new tools", "Nothing is ever actually shiny."),
-    ("County Line Diner", "Free pie, louder fans", "Driver may be slightly too full."),
-)
 
 
 def team_traits(team: Team) -> list[DriverTrait]:
@@ -67,10 +61,6 @@ def trait_modifiers(team: Team) -> CarStats:
 
 def traits_text(team: Team) -> str:
     return "\n".join(f"**{trait.name}:** {trait.description}" for trait in team_traits(team))
-
-
-def level_for_xp(xp: int) -> int:
-    return max(1, xp // XP_BY_LEVEL + 1)
 
 
 def cosmetic_title_for_level(level: int) -> str:
@@ -206,9 +196,13 @@ def interview_embed(team: Team, result: RaceResult, profile) -> discord.Embed:
     return embed
 
 
-def sponsor_offer(team: Team, race_id: int) -> tuple[str, str, str]:
-    rng = random.Random(f"sponsor:{team.id}:{race_id}:{team.name}")
-    return rng.choice(SPONSORS)
+def sponsor_offer(team: Team, race_id: int, level: int = 1) -> tuple[str, str, str, str]:
+    eligible = sponsors_for_level(level)
+    if not eligible:
+        eligible = sponsors_for_level(1)
+    rng = random.Random(f"sponsor:{team.id}:{race_id}:{team.name}:{level}")
+    sponsor = rng.choice(eligible)
+    return sponsor.key, sponsor.name, sponsor.benefit_text, sponsor.drawback_text
 
 
 def weather_name(weather_key: str | None) -> str:
@@ -221,6 +215,7 @@ def progress_embed(team: Team, progress, achievements, sponsors, fatigue) -> dis
     xp = int(progress["xp"]) if progress else 0
     level = level_for_xp(xp)
     title = progress["cosmetic_title"] if progress else cosmetic_title_for_level(level)
+    active = sponsor_by_key(getattr(team, "active_sponsor_key", None))
     embed = discord.Embed(
         title=f"Team Progress: {team.name}",
         description=f"Cosmetic title: **{title}**",
@@ -228,7 +223,22 @@ def progress_embed(team: Team, progress, achievements, sponsors, fatigue) -> dis
     )
     embed.add_field(name="Level", value=f"**{level}**", inline=True)
     embed.add_field(name="XP", value=f"**{xp}**", inline=True)
+    next_level_xp = level * 100 if level < 10 else xp
+    embed.add_field(
+        name="Next Unlock",
+        value=(f"{max(0, next_level_xp - xp)} XP to go\n{next_unlock(level)}" if level < 10 else next_unlock(level)),
+        inline=False,
+    )
+    embed.add_field(name="Unlocked Team Options", value="\n".join(f"• {line}" for line in unlock_lines(level)), inline=False)
     embed.add_field(name="Driver Traits", value=traits_text(team), inline=False)
+    if active:
+        embed.add_field(
+            name="Active Sponsor Contract",
+            value=f"**{active.name}**\nBenefit: {active.benefit_text}\nTrade-off: {active.drawback_text}",
+            inline=False,
+        )
+    else:
+        embed.add_field(name="Active Sponsor Contract", value="Independent — no sponsor trade-off active.", inline=False)
     if achievements:
         embed.add_field(
             name="Achievements",
@@ -237,8 +247,9 @@ def progress_embed(team: Team, progress, achievements, sponsors, fatigue) -> dis
         )
     else:
         embed.add_field(name="Achievements", value="No badges yet.", inline=False)
-    if sponsors:
-        offer = sponsors[0]
+    offered = [row for row in sponsors if row["status"] == "offered"] if sponsors else []
+    if offered:
+        offer = offered[0]
         embed.add_field(
             name="Latest Sponsor Offer",
             value=f"**{offer['sponsor_name']}**\n{offer['benefit_text']}\nDrawback: {offer['drawback_text']}",
@@ -254,16 +265,25 @@ def progress_embed(team: Team, progress, achievements, sponsors, fatigue) -> dis
 
 
 def sponsor_offers_embed(team: Team, offers) -> discord.Embed:
+    active = sponsor_by_key(getattr(team, "active_sponsor_key", None))
     embed = discord.Embed(
-        title=f"Sponsor Offers: {team.name}",
-        description="Offers are cosmetic/story hooks for now.",
+        title=f"Sponsor Paddock: {team.name}",
+        description="One active sponsor at a time. Every contract has a race benefit and a real trade-off.",
         color=discord.Color.dark_gold(),
     )
+    if active:
+        embed.add_field(
+            name="Active Contract",
+            value=f"**{active.name}**\nBenefit: {active.benefit_text}\nTrade-off: {active.drawback_text}",
+            inline=False,
+        )
+    else:
+        embed.add_field(name="Active Contract", value="Independent — no sponsor currently affects the car.", inline=False)
     if not offers:
         embed.add_field(name="No Offers Yet", value="Podiums and strong race moments can attract sponsors.", inline=False)
         return embed
     lines = [
-        f"**{row['sponsor_name']}** [{row['status'].title()}] - {row['benefit_text']}\nDrawback: {row['drawback_text']}"
+        f"**{row['sponsor_name']}** [{row['status'].title()}] - {row['benefit_text']}\nTrade-off: {row['drawback_text']}"
         for row in offers
     ]
     embed.add_field(name="Recent Offers", value="\n\n".join(lines)[:1024], inline=False)

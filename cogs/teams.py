@@ -27,6 +27,8 @@ from services.garage import (
 )
 from services.crew_sheet import render_crew_sheet
 from services.engagement import available_titles_for_level, level_for_xp, progress_embed, sponsor_offers_embed, track_records_embed
+from services.progression import LIVERIES, EMBLEMS, GARAGE_DECOR, unlocked_options, unlocked_setup_names, crew_unlocked, crew_required_level
+from services.sponsors import sponsor_by_key
 from services.formatting import Embeds
 from services.garage_sheet import render_parts_sheet
 from services.scrutineering import scrutineering_embed
@@ -76,13 +78,22 @@ def _crew_description(key: str) -> str:
     return _shorten(CREW_MEMBERS[key].description)
 
 
-def _garage_embed(team: Team, setup_rows=()) -> discord.Embed:
+def _garage_embed(team: Team, setup_rows=(), level: int = 1) -> discord.Embed:
     saved = saved_setup_summary(setup_rows)
     part_lines = []
     for slot, key in equipped_part_rows(team):
         label = PARTS[key].name if key in PARTS else "Empty"
         part_lines.append(f"**{slot.value.title()}:** {label}")
-    preset_lines = [f"**{name}:** {'Saved' if name in saved else 'Empty'}" for name in SETUP_PRESETS]
+    unlocked_presets = set(unlocked_setup_names(level))
+    preset_lines = []
+    for name in SETUP_PRESETS:
+        if name in unlocked_presets:
+            state = 'Saved' if name in saved else 'Empty'
+        elif name in saved:
+            state = 'Saved (legacy unlock)'
+        else:
+            state = 'Locked'
+        preset_lines.append(f"**{name}:** {state}")
     illegal = BuildService.illegal_disqualification_risk_percent(team)
     embed = discord.Embed(
         title=f"🔧 THE GARAGE — {team.name}",
@@ -92,6 +103,7 @@ def _garage_embed(team: Team, setup_rows=()) -> discord.Embed:
     embed.add_field(
         name="Build Condition",
         value=(
+            f"Team Level: **{level}**\n"
             f"Tuning Efficiency: **{BuildService.tuning_efficiency(team) * 100:.0f}%**\n"
             f"Mechanical Strain: **{BuildService.build_strain(team)} — {BuildService.build_strain_label(team)}**\n"
             f"Illegal Hardware Risk: **{illegal}%**"
@@ -101,6 +113,17 @@ def _garage_embed(team: Team, setup_rows=()) -> discord.Embed:
     embed.add_field(name="Installed Hardware", value="\n".join(part_lines)[:1024], inline=True)
     embed.add_field(name="Estimated Setup", value="\n".join(setup_rating_lines(team)), inline=True)
     embed.add_field(name="Pit Crew", value="\n".join(crew_roster_lines(team))[:1024], inline=False)
+    sponsor = sponsor_by_key(team.active_sponsor_key)
+    embed.add_field(
+        name="Team Identity",
+        value=(
+            f"Livery: **{_identity_name(LIVERIES, team.livery_key, team.livery_key)}**\n"
+            f"Emblem: **{_identity_name(EMBLEMS, team.emblem_key, team.emblem_key)}**\n"
+            f"Garage: **{_identity_name(GARAGE_DECOR, team.garage_decor_key, team.garage_decor_key)}**\n"
+            f"Sponsor: **{sponsor.name if sponsor else 'Independent'}**"
+        ),
+        inline=False,
+    )
     embed.add_field(name="Saved Setups", value=" · ".join(preset_lines)[:1024], inline=False)
     embed.set_footer(text="Parts are strategic trade-offs. Saved setups change hardware only; your crew stays with the team.")
     return embed
@@ -769,11 +792,12 @@ class CrewMemberSelect(discord.ui.Select):
 
 
 class PitCrewWizardView(discord.ui.View):
-    def __init__(self, cog: "TeamsCog", owner_id: int, team: Team):
+    def __init__(self, cog: "TeamsCog", owner_id: int, team: Team, level: int = 1):
         super().__init__(timeout=600)
         self.cog = cog
         self.owner_id = owner_id
         self.team = team
+        self.level = level
         self.selected_slot = CrewSlot.CREW_CHIEF
         self.selected_member_key: str | None = self.current_member_key_for_slot(self.selected_slot) or self.first_member_key()
         self.rebuild_items()
@@ -785,7 +809,11 @@ class PitCrewWizardView(discord.ui.View):
         return False
 
     def member_keys_for_slot(self, slot: CrewSlot) -> list[str]:
-        return [key for key, member in CREW_MEMBERS.items() if member.slot == slot]
+        current = self.current_member_key_for_slot(slot)
+        return [
+            key for key, member in CREW_MEMBERS.items()
+            if member.slot == slot and (crew_unlocked(key, self.level) or key == current)
+        ]
 
     def first_member_key(self) -> str | None:
         members = self.member_keys_for_slot(self.selected_slot)
@@ -829,6 +857,9 @@ class PitCrewWizardView(discord.ui.View):
         if selected:
             embed.add_field(name="What They Actually Do", value=crew_role_summary(selected), inline=False)
             embed.add_field(name="Crew Note", value=selected.description, inline=False)
+            required = crew_required_level(self.selected_member_key)
+            if required > 1:
+                embed.add_field(name="Specialist Access", value=f"Unlocked at **Level {required}** · team level **{self.level}**", inline=False)
         embed.add_field(name="Current Crew Roles", value="\n".join(crew_roster_lines(self.team))[:1024], inline=False)
         if has_sheet:
             embed.set_image(url="attachment://pit_crew_wizard.png")
@@ -867,6 +898,12 @@ class PitCrewWizardView(discord.ui.View):
             await interaction.response.send_message("Choose a valid crew member first.", ephemeral=True)
             return
         member = CREW_MEMBERS[self.selected_member_key]
+        if not crew_unlocked(self.selected_member_key, self.level):
+            await interaction.response.send_message(
+                f"**{member.name}** is a specialist candidate and unlocks at Level {crew_required_level(self.selected_member_key)}.",
+                ephemeral=True,
+            )
+            return
         if member.slot != self.selected_slot:
             await interaction.response.send_message("That crew member does not fit the selected position.", ephemeral=True)
             return
@@ -899,7 +936,7 @@ class SetupPresetSelect(discord.ui.Select):
                 description=("Saved setup" if name in saved_setup_summary(manager.setup_rows) else "Empty preset"),
                 default=manager.selected == name,
             )
-            for name in SETUP_PRESETS
+            for name in manager.available_names
         ]
         super().__init__(placeholder="Choose a garage preset", min_values=1, max_values=1, options=options)
 
@@ -909,14 +946,18 @@ class SetupPresetSelect(discord.ui.Select):
 
 
 class SetupManagerView(discord.ui.View):
-    def __init__(self, cog: "TeamsCog", owner_id: int, team: Team, setup_rows, mode: str):
+    def __init__(self, cog: "TeamsCog", owner_id: int, team: Team, setup_rows, mode: str, level: int = 1):
         super().__init__(timeout=300)
         self.cog = cog
         self.owner_id = owner_id
         self.team = team
         self.setup_rows = list(setup_rows or [])
         self.mode = mode if mode in {"save", "load"} else "save"
-        self.selected = SETUP_PRESETS[0]
+        self.level = level
+        unlocked = list(unlocked_setup_names(level))
+        saved_names = [str(row["setup_name"]) for row in self.setup_rows if str(row["setup_name"]) in SETUP_PRESETS]
+        self.available_names = tuple(dict.fromkeys([*unlocked, *saved_names]))
+        self.selected = self.available_names[0] if self.available_names else SETUP_PRESETS[0]
         self.rebuild_items()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -965,6 +1006,12 @@ class SetupManagerView(discord.ui.View):
         if self.team.id is None:
             await interaction.response.send_message("Team is missing an ID.", ephemeral=True)
             return
+        if self.selected not in unlocked_setup_names(self.level):
+            await interaction.response.send_message(
+                f"**{self.selected}** is not unlocked for new saves yet. Keep racing to raise the team level.",
+                ephemeral=True,
+            )
+            return
         parts = normalized_parts(self.team.parts)
         await self.cog.bot.db.save_team_setup(self.team.id, self.selected, parts)
         await audit_log(
@@ -1012,12 +1059,13 @@ class SetupManagerView(discord.ui.View):
 
 
 class GarageView(discord.ui.View):
-    def __init__(self, cog: "TeamsCog", owner_id: int, team: Team, setup_rows=()):
+    def __init__(self, cog: "TeamsCog", owner_id: int, team: Team, setup_rows=(), level: int = 1):
         super().__init__(timeout=600)
         self.cog = cog
         self.owner_id = owner_id
         self.team = team
         self.setup_rows = list(setup_rows or [])
+        self.level = level
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.owner_id or is_admin(interaction):
@@ -1026,7 +1074,7 @@ class GarageView(discord.ui.View):
         return False
 
     def embed(self) -> discord.Embed:
-        return _garage_embed(self.team, self.setup_rows)
+        return _garage_embed(self.team, self.setup_rows, self.level)
 
     async def _reload(self) -> None:
         if self.team.id is None:
@@ -1035,6 +1083,8 @@ class GarageView(discord.ui.View):
         if team:
             self.team = team
         self.setup_rows = list(await self.cog.bot.db.team_setups(self.team.id))
+        progress = await self.cog.bot.db.team_progress(self.team.id)
+        self.level = level_for_xp(int(progress["xp"]) if progress else 0)
 
     async def _open_parts(self, interaction: discord.Interaction, instruction: str) -> None:
         await self._reload()
@@ -1060,13 +1110,13 @@ class GarageView(discord.ui.View):
     @discord.ui.button(label="Save Setup", style=discord.ButtonStyle.secondary, row=0)
     async def save_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._reload()
-        view = SetupManagerView(self.cog, self.owner_id, self.team, self.setup_rows, "save")
+        view = SetupManagerView(self.cog, self.owner_id, self.team, self.setup_rows, "save", self.level)
         await interaction.response.send_message(embed=_setup_manager_embed(self.team, self.setup_rows, view.selected, "save"), view=view, ephemeral=True)
 
     @discord.ui.button(label="Load Setup", style=discord.ButtonStyle.secondary, row=0)
     async def load_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._reload()
-        view = SetupManagerView(self.cog, self.owner_id, self.team, self.setup_rows, "load")
+        view = SetupManagerView(self.cog, self.owner_id, self.team, self.setup_rows, "load", self.level)
         await interaction.response.send_message(embed=_setup_manager_embed(self.team, self.setup_rows, view.selected, "load"), view=view, ephemeral=True)
 
     @discord.ui.button(label="Ask Crew Chief", style=discord.ButtonStyle.primary, row=1)
@@ -1077,7 +1127,7 @@ class GarageView(discord.ui.View):
     @discord.ui.button(label="Pit Crew", style=discord.ButtonStyle.primary, row=1)
     async def pit_crew(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._reload()
-        view = PitCrewWizardView(self.cog, self.owner_id, self.team)
+        view = PitCrewWizardView(self.cog, self.owner_id, self.team, self.level)
         file = view.crew_file()
         if file:
             await interaction.response.send_message(embed=view.embed(True), file=file, view=view, ephemeral=True)
@@ -1122,7 +1172,9 @@ class MyTeamActionsView(discord.ui.View):
 
     @discord.ui.button(label="Pit Crew Wizard", style=discord.ButtonStyle.primary)
     async def pit_crew_wizard(self, interaction: discord.Interaction, button: discord.ui.Button):
-        view = PitCrewWizardView(self.cog, interaction.user.id, self.team)
+        progress = await self.cog.bot.db.team_progress(self.team.id) if self.team.id is not None else None
+        level = level_for_xp(int(progress["xp"]) if progress else 0)
+        view = PitCrewWizardView(self.cog, interaction.user.id, self.team, level)
         file = view.crew_file()
         if file:
             await interaction.response.send_message(embed=view.embed(True), file=file, view=view, ephemeral=True)
@@ -1144,9 +1196,9 @@ class SponsorOfferActionView(discord.ui.View):
         self.owner_id = owner_id
         self.team = team
         self.offer = next((offer for offer in offers if offer["status"] == "offered"), None)
-        disabled = self.offer is None
-        self.accept.disabled = disabled
-        self.reject.disabled = disabled
+        self.accept.disabled = self.offer is None or bool(team.active_sponsor_key)
+        self.reject.disabled = self.offer is None
+        self.end_contract.disabled = not bool(team.active_sponsor_key)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.owner_id or is_admin(interaction):
@@ -1154,28 +1206,120 @@ class SponsorOfferActionView(discord.ui.View):
         await interaction.response.send_message("These sponsor controls belong to another driver.", ephemeral=True)
         return False
 
-    async def _set_status(self, interaction: discord.Interaction, status: str) -> None:
-        if not self.offer:
-            await interaction.response.send_message("No active sponsor offer to update.", ephemeral=True)
-            return
-        await self.cog.bot.db.update_sponsor_offer_status(int(self.offer["id"]), status)
-        await audit_log(
-            self.cog.bot,
-            f"Sponsor Offer {status.title()}",
-            f"#{self.team.id} {self.team.name}: {self.offer['sponsor_name']}",
-            interaction.user,
-        )
-        for item in self.children:
-            item.disabled = True
-        await interaction.response.edit_message(content=f"Sponsor offer **{status}**.", view=self)
-
     @discord.ui.button(label="Accept Latest Offer", style=discord.ButtonStyle.success)
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._set_status(interaction, "accepted")
+        if not self.offer or self.team.id is None:
+            await interaction.response.send_message("No active sponsor offer to accept.", ephemeral=True)
+            return
+        try:
+            key = await self.cog.bot.db.accept_sponsor_offer(self.team.id, int(self.offer["id"]))
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        sponsor = sponsor_by_key(key)
+        await audit_log(self.cog.bot, "Sponsor Contract Accepted", f"#{self.team.id} {self.team.name}: {sponsor.name if sponsor else key}", interaction.user)
+        team = await self.cog.bot.db.get_team(self.team.id)
+        offers = await self.cog.bot.db.team_sponsor_offers(self.team.id, limit=8)
+        await interaction.response.edit_message(
+            embed=sponsor_offers_embed(team or self.team, offers),
+            view=SponsorOfferActionView(self.cog, self.owner_id, team or self.team, offers),
+        )
 
     @discord.ui.button(label="Reject Latest Offer", style=discord.ButtonStyle.danger)
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._set_status(interaction, "rejected")
+        if not self.offer:
+            await interaction.response.send_message("No active sponsor offer to reject.", ephemeral=True)
+            return
+        await self.cog.bot.db.update_sponsor_offer_status(int(self.offer["id"]), "rejected")
+        await audit_log(self.cog.bot, "Sponsor Offer Rejected", f"#{self.team.id} {self.team.name}: {self.offer['sponsor_name']}", interaction.user)
+        offers = await self.cog.bot.db.team_sponsor_offers(self.team.id, limit=8)
+        await interaction.response.edit_message(embed=sponsor_offers_embed(self.team, offers), view=SponsorOfferActionView(self.cog, self.owner_id, self.team, offers))
+
+    @discord.ui.button(label="End Current Contract", style=discord.ButtonStyle.secondary)
+    async def end_contract(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.team.id is None or not self.team.active_sponsor_key:
+            await interaction.response.send_message("This team is already independent.", ephemeral=True)
+            return
+        sponsor = sponsor_by_key(self.team.active_sponsor_key)
+        await self.cog.bot.db.end_sponsor_contract(self.team.id)
+        await audit_log(self.cog.bot, "Sponsor Contract Ended", f"#{self.team.id} {self.team.name}: {sponsor.name if sponsor else self.team.active_sponsor_key}", interaction.user)
+        team = await self.cog.bot.db.get_team(self.team.id)
+        offers = await self.cog.bot.db.team_sponsor_offers(self.team.id, limit=8)
+        await interaction.response.edit_message(embed=sponsor_offers_embed(team or self.team, offers), view=SponsorOfferActionView(self.cog, self.owner_id, team or self.team, offers))
+
+
+def _identity_name(options, key: str, fallback: str) -> str:
+    return next((item.name for item in options if item.key == key), fallback)
+
+
+def team_identity_embed(team: Team, identity, level: int) -> discord.Embed:
+    livery = identity["livery_key"] if identity else "bare_primer"
+    emblem = identity["emblem_key"] if identity else "rat_skull"
+    decor = identity["garage_decor_key"] if identity else "oil_stained_bench"
+    intro = identity["intro_phrase"] if identity else ""
+    embed = discord.Embed(title=f"🏁 Team Identity — {team.name}", color=discord.Color.purple())
+    embed.add_field(name="Level", value=str(level), inline=True)
+    embed.add_field(name="Livery", value=_identity_name(LIVERIES, livery, livery), inline=True)
+    embed.add_field(name="Emblem", value=_identity_name(EMBLEMS, emblem, emblem), inline=True)
+    embed.add_field(name="Garage", value=_identity_name(GARAGE_DECOR, decor, decor), inline=True)
+    embed.add_field(name="Intro Phrase", value=intro or "Standard race introduction", inline=False)
+    embed.set_footer(text="Identity unlocks are cosmetic. They never add raw speed, handling or reliability.")
+    return embed
+
+
+class IdentitySelect(discord.ui.Select):
+    def __init__(self, view: "TeamIdentityView", kind: str, options):
+        self.identity_view = view
+        self.kind = kind
+        choices = [discord.SelectOption(label=o.name, value=o.key, description=f"Unlocked at Level {o.required_level}") for o in unlocked_options(options, view.level)]
+        super().__init__(placeholder=f"Choose {kind.replace('_', ' ')}", min_values=1, max_values=1, options=choices[:25], row={"livery_key":0,"emblem_key":1,"garage_decor_key":2}[kind])
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.identity_view.cog.bot.db.update_team_identity(self.identity_view.team.id, **{self.kind: self.values[0]})
+        await self.identity_view.refresh(interaction)
+
+
+class IntroPhraseModal(discord.ui.Modal, title="Custom Team Intro"): 
+    phrase = discord.ui.TextInput(label="Intro phrase", max_length=160, required=False, placeholder="e.g. The Rust Kings roll out under a cloud of bad decisions...")
+    def __init__(self, view: "TeamIdentityView"):
+        super().__init__()
+        self.identity_view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if self.identity_view.level < 3:
+            await interaction.response.send_message("Custom intros unlock at Level 3.", ephemeral=True)
+            return
+        await self.identity_view.cog.bot.db.update_team_identity(self.identity_view.team.id, intro_phrase=str(self.phrase.value).strip())
+        await self.identity_view.refresh(interaction)
+
+
+class TeamIdentityView(discord.ui.View):
+    def __init__(self, cog: "TeamsCog", owner_id: int, team: Team, identity, level: int):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.team = team
+        self.identity = identity
+        self.level = level
+        self.add_item(IdentitySelect(self, "livery_key", LIVERIES))
+        self.add_item(IdentitySelect(self, "emblem_key", EMBLEMS))
+        self.add_item(IdentitySelect(self, "garage_decor_key", GARAGE_DECOR))
+        intro = discord.ui.Button(label="Set Intro Phrase", style=discord.ButtonStyle.primary, row=3, disabled=level < 3)
+        intro.callback = self.set_intro
+        self.add_item(intro)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id or is_admin(interaction):
+            return True
+        await interaction.response.send_message("This identity panel belongs to another driver.", ephemeral=True)
+        return False
+
+    async def set_intro(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(IntroPhraseModal(self))
+
+    async def refresh(self, interaction: discord.Interaction):
+        self.identity = await self.cog.bot.db.team_identity(self.team.id)
+        await interaction.response.edit_message(embed=team_identity_embed(self.team, self.identity, self.level), view=self)
 
 
 class AdminTeamCommandSelect(discord.ui.Select):
@@ -1523,7 +1667,9 @@ class TeamsCog(commands.Cog):
         if is_admin(interaction) and team_id is None:
             async def show_selected(select_interaction: discord.Interaction, selected_team: Team):
                 setup_rows = await self.bot.db.team_setups(selected_team.id)
-                view = GarageView(self, select_interaction.user.id, selected_team, setup_rows)
+                progress = await self.bot.db.team_progress(selected_team.id)
+                level = level_for_xp(int(progress["xp"]) if progress else 0)
+                view = GarageView(self, select_interaction.user.id, selected_team, setup_rows, level)
                 await select_interaction.response.send_message(
                     embed=view.embed(),
                     view=view,
@@ -1537,7 +1683,9 @@ class TeamsCog(commands.Cog):
             return
 
         setup_rows = await self.bot.db.team_setups(team.id)
-        view = GarageView(self, interaction.user.id, team, setup_rows)
+        progress = await self.bot.db.team_progress(team.id)
+        level = level_for_xp(int(progress["xp"]) if progress else 0)
+        view = GarageView(self, interaction.user.id, team, setup_rows, level)
         await interaction.followup.send(
             embed=view.embed(),
             view=view,
@@ -1687,6 +1835,19 @@ class TeamsCog(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(name="team_identity", description="Choose unlocked livery, emblem, garage decor and team intro.")
+    @app_commands.autocomplete(team_id=team_autocomplete)
+    async def team_identity(self, interaction: discord.Interaction, team_id: int | None = None):
+        await interaction.response.defer(ephemeral=True)
+        team = await self._owned_or_admin_team(interaction, team_id)
+        if not team or team.id is None:
+            return
+        progress = await self.bot.db.team_progress(team.id)
+        level = level_for_xp(int(progress["xp"]) if progress else 0)
+        identity = await self.bot.db.team_identity(team.id)
+        view = TeamIdentityView(self, interaction.user.id, team, identity, level)
+        await interaction.followup.send(embed=team_identity_embed(team, identity, level), view=view, ephemeral=True)
+
     @app_commands.command(name="track_records", description="Show track records and chaos marks.")
     @app_commands.choices(track_key=TRACK_CHOICES)
     async def track_records(self, interaction: discord.Interaction, track_key: str | None = None):
@@ -1775,7 +1936,9 @@ class TeamsCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         if is_admin(interaction) and team_id is None:
             async def open_selected(select_interaction: discord.Interaction, selected_team: Team):
-                view = PitCrewWizardView(self, select_interaction.user.id, selected_team)
+                progress = await self.bot.db.team_progress(selected_team.id)
+                level = level_for_xp(int(progress["xp"]) if progress else 0)
+                view = PitCrewWizardView(self, select_interaction.user.id, selected_team, level)
                 file = view.crew_file()
                 if file:
                     await select_interaction.response.send_message(embed=view.embed(True), file=file, view=view, ephemeral=True)
@@ -1788,7 +1951,9 @@ class TeamsCog(commands.Cog):
         if not team:
             return
 
-        view = PitCrewWizardView(self, interaction.user.id, team)
+        progress = await self.bot.db.team_progress(team.id)
+        level = level_for_xp(int(progress["xp"]) if progress else 0)
+        view = PitCrewWizardView(self, interaction.user.id, team, level)
         file = view.crew_file()
         if file:
             await interaction.followup.send(

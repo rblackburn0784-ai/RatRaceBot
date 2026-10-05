@@ -4,6 +4,7 @@ from data.defaults import PARTS
 from models.domain import Team, WeatherCondition
 from services.builds import BuildService
 from services.engagement import traits_text
+from services.sponsors import sponsor_by_key
 
 
 def _illegal_parts(team: Team) -> list[str]:
@@ -38,6 +39,9 @@ def _team_scrutineering_lines(
 ) -> tuple[str, str]:
     illegal_parts = _illegal_parts(team)
     illegal_risk = BuildService.illegal_disqualification_risk_percent(team)
+    sponsor = sponsor_by_key(team.active_sponsor_key)
+    if illegal_risk and sponsor:
+        illegal_risk = min(95, illegal_risk + sponsor.illegal_scrutiny_bonus)
     stats = BuildService.effective_car_stats(team)
     warnings = []
 
@@ -54,6 +58,8 @@ def _team_scrutineering_lines(
         warnings.append(f"stressed tune: strain {strain}")
     if carryover_damage:
         warnings.append(f"{carryover_damage}% repaired tournament damage")
+    if sponsor:
+        warnings.append(f"sponsor: {sponsor.name}")
     warnings.extend(_weather_warnings(team, weather))
 
     if illegal_risk >= 18:

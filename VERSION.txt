@@ -1,4 +1,4 @@
-Rat Rod Racing Bot v0.4.5 — Garage, Parts & Crew Gameplay
+Rat Rod Racing Bot v0.4.6 — Progression, Sponsors & Team Identity
 Release date: 2026-10-05
 
-See UPGRADE_v0.4.5.md before replacing an existing installation.
+See UPGRADE_v0.4.6.md before replacing an existing installation.

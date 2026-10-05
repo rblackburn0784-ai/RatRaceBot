@@ -4,7 +4,7 @@ from discord.ext import commands
 
 from cogs.admin import AdminPanelView, TeamSelectView, admin_panel_embed, admin_panel_file
 from cogs.racing import RaceWizardView
-from cogs.teams import EditTeamWizardView, MyTeamActionsView, PitCrewWizardView, SponsorOfferActionView, TeamWizardView
+from cogs.teams import EditTeamWizardView, MyTeamActionsView, PitCrewWizardView, SponsorOfferActionView, TeamIdentityView, TeamWizardView, team_identity_embed
 from config import BOT_VERSION
 from services.access import is_admin
 from services.engagement import available_titles_for_level, level_for_xp, progress_embed, sponsor_offers_embed
@@ -97,6 +97,7 @@ class MainMenuView(discord.ui.View):
             ("team_rivalries", "Team Rivalries", 2, discord.ButtonStyle.secondary),
             ("hall_of_fame", "Hall Of Fame", 2, discord.ButtonStyle.secondary),
             ("season_history", "Season History", 2, discord.ButtonStyle.secondary),
+            ("team_identity", "Team Identity", 3, discord.ButtonStyle.secondary),
             ("status", "Status", 3, discord.ButtonStyle.primary),
         ]
         for key, label, row, style in buttons:
@@ -179,7 +180,9 @@ class MainMenuView(discord.ui.View):
             return
 
         async def open_pit(select_interaction: discord.Interaction, team):
-            view = PitCrewWizardView(teams_cog, select_interaction.user.id, team)
+            progress = await self.cog.bot.db.team_progress(team.id)
+            level = level_for_xp(int(progress["xp"]) if progress else 0)
+            view = PitCrewWizardView(teams_cog, select_interaction.user.id, team, level)
             file = view.crew_file()
             if file:
                 await select_interaction.response.send_message(embed=view.embed(True), file=file, view=view, ephemeral=True)
@@ -266,6 +269,24 @@ class MainMenuView(discord.ui.View):
             )
 
         await self._with_team(interaction, choose_title)
+
+    async def _handle_team_identity(self, interaction: discord.Interaction) -> None:
+        teams_cog = self.cog.teams_cog()
+        if not teams_cog:
+            await interaction.response.send_message("Team tools are not loaded.", ephemeral=True)
+            return
+
+        async def show_identity(select_interaction: discord.Interaction, team):
+            progress = await self.cog.bot.db.team_progress(team.id)
+            level = level_for_xp(int(progress["xp"]) if progress else 0)
+            identity = await self.cog.bot.db.team_identity(team.id)
+            await select_interaction.response.send_message(
+                embed=team_identity_embed(team, identity, level),
+                view=TeamIdentityView(teams_cog, select_interaction.user.id, team, identity, level),
+                ephemeral=True,
+            )
+
+        await self._with_team(interaction, show_identity)
 
     async def _handle_team_rivalries(self, interaction: discord.Interaction) -> None:
         async def show_rivalries(select_interaction: discord.Interaction, team):
@@ -415,12 +436,15 @@ class MenuCog(commands.Cog):
                 missing.append("pit crew")
             offers = await self.bot.db.team_sponsor_offers(team.id, limit=3)
             offered = [offer for offer in offers if offer["status"] == "offered"]
+            from services.sponsors import sponsor_by_key
+            active_sponsor = sponsor_by_key(team.active_sponsor_key)
             embed.add_field(
                 name="Your Team",
                 value=(
                     f"**#{team.id} {team.name}** - {team.driver_name}\n"
                     f"Setup: {'missing ' + ', '.join(missing) if missing else 'ready'}\n"
-                    f"Sponsor offers: {len(offered)} active"
+                    f"Sponsor: {active_sponsor.name if active_sponsor else 'Independent'}\n"
+                    f"Sponsor offers: {len(offered)} waiting"
                 ),
                 inline=False,
             )
@@ -448,20 +472,20 @@ class MenuCog(commands.Cog):
     async def version(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="Rat Rod Racing Bot",
-            description=f"Version {BOT_VERSION} - garage, parts & crew gameplay",
+            description=f"Version {BOT_VERSION} - progression, sponsors & team identity",
             color=discord.Color.dark_gold(),
         )
         embed.add_field(
             name="Recent Changes",
             value=(
-                "THE GARAGE dashboard shows all eight part slots, strain, tuning and four setup ratings\n"
-                "Parts can be compared and replaced in one step instead of remove-then-fit\n"
-                "Five persistent setup presets: Street, Dirt, Wet, High-Speed and Custom\n"
-                "Saved setups change hardware only; your standing pit crew stays assigned\n"
-                "Ask Crew Chief gives contextual setup, strain, heat, tyre and illegal-hardware advice\n"
-                "Crew roles are explained in plain language and surfaced in race-event Why notes\n"
-                "Lead Mechanic, Tyre Changer, Fuel Runner, Spotter and Crew Chief retain specialist mechanics\n"
-                "v0.4.3 competitive balance and v0.4.4 race presentation remain protected"
+                "Team XP now unlocks choices and identity rather than permanent speed\n"
+                "Garage preset capacity expands from 3 to 5 as the team levels up\n"
+                "Liveries, emblems, garage decor and a custom Level 3 race intro are selectable\n"
+                "Level 4 opens the specialist crew shortlist; existing assignments are grandfathered\n"
+                "Five sponsor contracts offer small situational benefits paired with real drawbacks\n"
+                "Only one sponsor can be active at a time; contracts can be ended from Sponsor Paddock\n"
+                "Level-ups and established-team Gazette recognition are surfaced after races\n"
+                "v0.4.3 balance, v0.4.4 presentation and v0.4.5 garage gameplay remain protected"
             ),
             inline=False,
         )

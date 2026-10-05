@@ -26,6 +26,19 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - `/race_replay` is non-destructive: it does not duplicate career stats, XP, achievements, sponsors, fatigue, or track records.
 
 
+## v0.4.6 progression, sponsors & team identity
+
+- Team XP now forms a Level 1–10 progression path at 100 XP per level. **Levels unlock choices and identity, never hidden speed/handling/reliability bonuses.**
+- Garage preset capacity grows from 3 slots at Levels 1–2, to 4 at Levels 3–4, to all 5 at Level 5+. Existing saved setups are grandfathered.
+- `/team_identity` adds level-gated liveries, emblems, garage decoration and a custom Level 3 race intro phrase. Identity is persistent but cosmetic.
+- Level 4 opens the specialist crew shortlist for new assignments; specialists already employed before the upgrade remain grandfathered.
+- Sponsor offers now activate real race contracts. A team can have **one active sponsor at a time**, can reject offers, or can end its current contract from the Sponsor Paddock.
+- Five sponsors have deliberately two-sided mechanics: XP-vs-focus, repair-vs-pit-variance, momentum-vs-tyre-wear, hazard-save-vs-pace/scrutiny, and opening acceleration-vs-heat/scrutiny.
+- Sponsor availability expands with team level rather than giving veteran teams a permanent base-stat bonus.
+- Level-ups are called out after races and Level 5+ winners can receive established-team Blacktop Gazette recognition.
+- Player-selected cosmetic titles are preserved when future race XP is awarded.
+- Replay snapshots preserve active sponsor and identity state, while the Balance Lab now includes sponsor-dominance guardrails.
+
 ## v0.4.5 garage, parts & crew gameplay
 
 - `/my_team` now opens **THE GARAGE** with all eight part slots, Mechanical Strain, Tuning Efficiency, illegal-hardware risk and broad **Fast Track / Technical / Wet / Rough** setup ratings.
@@ -123,7 +136,7 @@ python tools/balance_lab.py --quick
 - `/scrutineering` — inspect your team's illegal-part, heat, reliability, and race-readiness risks.
 - `/team_progress` — show cosmetic XP, title, traits, achievements, sponsors, and fatigue.
 - `/team_title` — choose an unlocked cosmetic title for your team.
-- `/sponsor_offers` — show recent cosmetic/story sponsor offers with accept/reject buttons.
+- `/sponsor_offers` — manage recent sponsor offers, accept one active trade-off contract, reject offers, or end the current contract.
 - `/hall_of_fame` — show champions, record holders, and legendary rivalries.
 - `/team_create` — admin-only team creation.
 - `/team_list` — admin-only team list.
@@ -178,7 +191,7 @@ python tools/balance_lab.py --quick
 - Discord users with Administrator permission can use every command.
 - Role IDs listed in `ADMIN_ROLE_IDS` can also use admin commands.
 - If `AUDIT_LOG_CHANNEL_ID` is set, key admin actions are logged there.
-- Regular drivers can only use `/menu`, `/status`, `/team_wizard`, `/team_edit_wizard`, `/parts_wizard`, `/pit_crew_wizard`, `/my_team`, `/scrutineering`, `/team_reputation`, `/team_rivalries`, `/team_progress`, `/team_title`, `/sponsor_offers`, `/track_records`, `/race_tracks`, `/track_cards`, and `/race_wizard`.
+- Regular drivers can only use `/menu`, `/status`, `/team_wizard`, `/team_edit_wizard`, `/parts_wizard`, `/pit_crew_wizard`, `/my_team`, `/scrutineering`, `/team_reputation`, `/team_rivalries`, `/team_progress`, `/team_title`, `/team_identity`, `/sponsor_offers`, `/track_records`, `/race_tracks`, `/track_cards`, and `/race_wizard`.
 - Regular drivers can create one team, linked to their Discord user ID.
 - Regular drivers can only edit their own linked team.
 - Team profile edits are locked while that team is in an open tournament, but parts are still editable.
@@ -234,4 +247,4 @@ The bot will send GIFs where available. Audio support is left as a hook: the cod
 
 ## Notes
 
-Current code version: **v0.4.5 — Garage, Parts & Crew Gameplay**. The v0.4.3 competitive balance model remains unchanged and v0.4.4 race presentation stays intact. v0.4.5 turns the garage into an interactive gameplay layer with one-step part replacement/comparison, five persistent setup presets, contextual Crew Chief advice and visible specialist crew roles. See `UPGRADE_v0.4.5.md` for upgrade notes.
+Current code version: **v0.4.6 — Progression, Sponsors & Team Identity**. Progression unlocks choices rather than raw performance, sponsor contracts are small two-sided situational modifiers, and team identity is persistent but cosmetic. The v0.4.3 Balance Lab now includes sponsor guardrails while v0.4.4 presentation and v0.4.5 garage gameplay remain intact. See `UPGRADE_v0.4.6.md` and `PROGRESSION_v0.4.6.md` for details.

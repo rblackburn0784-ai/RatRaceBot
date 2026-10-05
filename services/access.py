@@ -16,7 +16,7 @@ def is_admin(interaction: discord.Interaction) -> bool:
 
 
 async def deny_admin_only(interaction: discord.Interaction) -> None:
-    message = "Only admins can use that command. Drivers can use `/menu`, `/status`, `/team_wizard`, `/team_edit_wizard`, `/parts_wizard`, `/pit_crew_wizard`, `/my_team`, `/scrutineering`, `/team_reputation`, `/team_rivalries`, `/team_progress`, `/team_title`, `/sponsor_offers`, `/track_records`, `/race_tracks`, `/track_cards`, and `/race_wizard`."
+    message = "Only admins can use that command. Drivers can use `/menu`, `/status`, `/team_wizard`, `/team_edit_wizard`, `/parts_wizard`, `/pit_crew_wizard`, `/my_team`, `/scrutineering`, `/team_reputation`, `/team_rivalries`, `/team_progress`, `/team_title`, `/team_identity`, `/sponsor_offers`, `/track_records`, `/race_tracks`, `/track_cards`, and `/race_wizard`."
     if interaction.response.is_done():
         await interaction.followup.send(message, ephemeral=True)
     else:
