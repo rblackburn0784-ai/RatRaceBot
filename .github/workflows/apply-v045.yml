@@ -31,6 +31,9 @@ jobs:
           missing = [str(p) for p in paths if not p.exists()]
           if missing:
               raise SystemExit(f'Missing patch chunks: {missing}')
+          for p in paths:
+              text = p.read_text(encoding='utf-8')
+              print(f'{p}: chars={len(text)} sha256={hashlib.sha256(text.encode()).hexdigest()}')
           encoded = ''.join(p.read_text(encoding='utf-8') for p in paths)
           payload = base64.b64decode(encoded, validate=True)
           expected = '085ebba4394b4063bac0e6c965a9be09ab5dc9f326a9a80e302a84a8c68fed4c'
