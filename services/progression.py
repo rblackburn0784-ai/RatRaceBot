@@ -88,7 +88,7 @@ def next_unlock(level: int) -> str:
     for required, text in milestones.items():
         if level < required:
             return f'Level {required}: {text}'
-    return 'All current v0.4.6 progression unlocks earned.'
+    return 'All current progression unlocks earned.'
 
 SPECIALIST_CREW_KEYS = {
     'chief_mae_clipboard',

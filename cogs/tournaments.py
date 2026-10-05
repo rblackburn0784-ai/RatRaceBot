@@ -14,6 +14,15 @@ TRACK_CHOICES = [
 ]
 from services.access import deny_admin_only, is_admin
 from services.audit import audit_log
+from services.championship import (
+    awards_from_history,
+    calendar_entries,
+    calendar_text,
+    championship_hub_embed,
+    season_awards_text,
+    summary_from_history,
+    team_form,
+)
 from services.media import MediaRegistry
 from services.preflight import race_preflight_embed
 from services.predictions import PredictionView
@@ -49,6 +58,14 @@ PODIUM_MEDALS = (
     ("🥈", "Silver Medal"),
     ("🥉", "Bronze Medal"),
 )
+
+PUBLIC_TOURNAMENT_COMMANDS = {
+    "championship",
+    "tournament_standings",
+    "tournament_stats",
+    "tournament_schedule",
+    "season_history",
+}
 
 
 def random_tournament_tracks(track_count: int) -> list[str]:
@@ -91,7 +108,8 @@ def _award_line(rows, stat_key: str, label: str, emoji: str) -> str:
 def tournament_stats_embed(tournament, rows) -> discord.Embed:
     embed = discord.Embed(title=f"Tournament Stats: {tournament['name']}")
     standings = [
-        f"**{index}. {row['name']}** - {row['points']} pts | W {row['wins']} | Podiums {row['podiums']} | Races {row['races']}"
+        f"**{index}. {row['name']}** - {row['points']} pts | W {row['wins']} | Podiums {row['podiums']} | "
+        f"FL {row['fastest_laps']} | DNF {row['dnfs']} | DSQ {row['disqualifications']}"
         for index, row in enumerate(rows, start=1)
     ]
     embed.add_field(name="Points Table", value="\n".join(standings[:10])[:1024], inline=False)
@@ -106,7 +124,7 @@ def tournament_stats_embed(tournament, rows) -> discord.Embed:
     return embed
 
 
-def tournament_final_embed(tournament, rows) -> discord.Embed:
+def tournament_final_embed(tournament, rows, history=None) -> discord.Embed:
     embed = discord.Embed(
         title=f"Final Results: {tournament['name']}",
         description="The tournament is complete. Here is the final podium and chaos board.",
@@ -133,11 +151,24 @@ def tournament_final_embed(tournament, rows) -> discord.Embed:
         inline=False,
     )
 
-    award_lines = [
-        _award_line(rows, stat_key, label, emoji)
-        for stat_key, label, emoji in TOURNAMENT_AWARDS
-    ]
-    embed.add_field(name="Tournament Awards", value="\n".join(award_lines), inline=False)
+    season_awards = awards_from_history(history) if history else []
+    if season_awards:
+        embed.add_field(name="Season Awards", value=season_awards_text(season_awards)[:1024], inline=False)
+    chaos_lines = [_award_line(rows, stat_key, label, emoji) for stat_key, label, emoji in TOURNAMENT_AWARDS]
+    embed.add_field(name="Chaos Board", value="\n".join(chaos_lines), inline=False)
+    if history:
+        summary = summary_from_history(history)
+        if summary:
+            status = str(summary.get("season_status", "complete")).title()
+            embed.add_field(
+                name="Season Summary",
+                value=(
+                    f"Status: **{status}** | Championship races: **{summary.get('championship_races', 0)}**\n"
+                    f"Overtakes: **{summary.get('total_overtakes', 0)}** | Crashes: **{summary.get('total_crashes', 0)}** | "
+                    f"DNFs: **{summary.get('total_dnfs', 0)}** | DSQs: **{summary.get('total_disqualifications', 0)}**"
+                ),
+                inline=False,
+            )
     embed.set_footer(text="Final tournament report")
     return embed
 
@@ -328,6 +359,9 @@ class TournamentsCog(commands.Cog):
         self.media = MediaRegistry()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        command_name = getattr(getattr(interaction, "command", None), "name", "")
+        if command_name in PUBLIC_TOURNAMENT_COMMANDS:
+            return True
         if is_admin(interaction):
             return True
         await deny_admin_only(interaction)
@@ -501,6 +535,12 @@ class TournamentsCog(commands.Cog):
                 await interaction.channel.send(f"Tournament race was not saved: {exc}")
                 return
 
+            if schedule_race_number is None and await self.bot.db.tournament_schedule(tournament_id):
+                await interaction.channel.send(
+                    "🏁 **Exhibition result:** this race is saved for history, but it does not change championship points, "
+                    "fastest-lap totals, carryover damage, or the scheduled round count."
+                )
+
             stream_error = None
             try:
                 await RaceStreamer(self.media, self.bot.settings.race_tick_seconds).stream(interaction.channel, events)
@@ -554,7 +594,8 @@ class TournamentsCog(commands.Cog):
         if not tournament or not rows:
             return
 
-        message = await channel.send(embed=tournament_final_embed(tournament, rows))
+        history = await self.bot.db.season_history_entry(tournament_id)
+        message = await channel.send(embed=tournament_final_embed(tournament, rows, history))
         try:
             await message.pin(reason="Final tournament results")
         except (discord.Forbidden, discord.HTTPException):
@@ -613,12 +654,14 @@ class TournamentsCog(commands.Cog):
         if not rows:
             await interaction.response.send_message("No standings yet.", ephemeral=True)
             return
+        races = await self.bot.db.tournament_races(tournament_id, championship_only=True)
         lines = []
         for i, r in enumerate(rows, start=1):
+            form = " · ".join(team_form(races, int(r["team_id"]), 5)) or "—"
             lines.append(
-                f"**{i}. {r['name']}** - {r['points']} pts | W {r['wins']} | Podiums {r['podiums']} | "
-                f"Races {r['races']} | Car Dmg {r['carryover_damage']}% | Overtakes {r['overtakes']} | "
-                f"Crashes {r['crashes']} | Illegal {r['illegal_moves']}"
+                f"**{i}. {r['name']}** - {r['points']} pts | W {r['wins']} | Podiums {r['podiums']} | FL {r['fastest_laps']} | "
+                f"DNF {r['dnfs']} | DSQ {r['disqualifications']}\n"
+                f"Form: `{form}` | Car Dmg {r['carryover_damage']}% | Overtakes {r['overtakes']}"
             )
         view = PaginatedTextView(interaction.user.id, "Tournament Standings", lines, per_page=10)
         await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
@@ -643,6 +686,25 @@ class TournamentsCog(commands.Cog):
         view = PaginatedTextView(interaction.user.id, "Season History", season_history_lines(rows), per_page=8)
         await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
+    @app_commands.command(name="championship", description="Open the current Blacktop Championship Hub.")
+    async def championship(self, interaction: discord.Interaction, tournament_id: int | None = None):
+        tournament = await self.bot.db.get_tournament(tournament_id) if tournament_id else await self.bot.db.current_tournament()
+        if not tournament and tournament_id is None:
+            recent = await self.bot.db.list_tournaments(include_closed=True, limit=1)
+            tournament = recent[0] if recent else None
+        if not tournament:
+            await interaction.response.send_message("No championship found.", ephemeral=True)
+            return
+        tid = int(tournament["id"])
+        standings = await self.bot.db.standings(tid)
+        schedule = await self.bot.db.tournament_schedule(tid)
+        races = await self.bot.db.tournament_races(tid)
+        rivalries = await self.bot.db.tournament_rivalries(tid, limit=5)
+        await interaction.response.send_message(
+            embed=championship_hub_embed(tournament, standings, schedule, races, rivalries),
+            ephemeral=True,
+        )
+
     @app_commands.command(name="tournament_start_race", description="Run a tournament race using all 10 entered teams.")
     @app_commands.choices(track_key=TRACK_CHOICES)
     async def tournament_start_race(self, interaction: discord.Interaction, tournament_id: int, track_key: str, team_ids_csv: str | None = None, seed: str | None = None):
@@ -660,7 +722,9 @@ class TournamentsCog(commands.Cog):
             ids = parse_team_ids_csv(team_ids_csv)
         else:
             ids = await self.bot.db.tournament_team_ids(tournament_id)
-        await self.send_tournament_preflight(interaction, tournament_id, track_key, ids, seed)
+        schedule = await self.bot.db.tournament_schedule(tournament_id)
+        title_prefix = "Exhibition Race" if schedule else "Tournament Race"
+        await self.send_tournament_preflight(interaction, tournament_id, track_key, ids, seed, title_prefix=title_prefix)
 
     @app_commands.command(name="tournament_next_race", description="Run the next race from a tournament's saved track schedule.")
     async def tournament_next_race(self, interaction: discord.Interaction, tournament_id: int, seed: str | None = None):
@@ -703,9 +767,8 @@ class TournamentsCog(commands.Cog):
             await interaction.response.send_message("This tournament does not have a saved schedule.", ephemeral=True)
             return
 
-        track_keys = [str(row["track_key"]) for row in rows]
-        completed_count = await self.bot.db.tournament_scheduled_race_count(tournament_id)
-        await interaction.response.send_message(schedule_text(track_keys, completed_count), ephemeral=True)
+        races = await self.bot.db.tournament_races(tournament_id)
+        await interaction.response.send_message(calendar_text(calendar_entries(rows, races)), ephemeral=True)
 
     @app_commands.command(name="tournament_close", description="Finalise standings, save Season History, and close a tournament.")
     async def tournament_close(self, interaction: discord.Interaction, tournament_id: int):
@@ -730,9 +793,17 @@ class TournamentsCog(commands.Cog):
                 view=None,
             )
 
+        schedule = await self.bot.db.tournament_schedule(tournament_id)
+        completed = await self.bot.db.tournament_scheduled_race_count(tournament_id)
+        close_note = ""
+        if schedule and completed < len(schedule):
+            close_note = (
+                f"\n\n⚠️ This championship is only **{completed}/{len(schedule)} rounds** complete. "
+                "Closing it now will permanently record a **Shortened Season** using the current standings."
+            )
         embed = discord.Embed(
             title="Confirm Tournament Close",
-            description=f"Close **#{tournament_id} {tournament['name']}**?",
+            description=f"Close **#{tournament_id} {tournament['name']}**?{close_note}",
             color=discord.Color.red(),
         )
         await interaction.response.send_message(

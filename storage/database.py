@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS tournament_teams (
     last_minute_wins INTEGER NOT NULL DEFAULT 0,
     pit_stops INTEGER NOT NULL DEFAULT 0,
     near_misses INTEGER NOT NULL DEFAULT 0,
+    fastest_laps INTEGER NOT NULL DEFAULT 0,
     carryover_damage INTEGER NOT NULL DEFAULT 0,
     peak_carryover_damage INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (tournament_id, team_id)
@@ -65,7 +66,8 @@ CREATE TABLE IF NOT EXISTS races (
     events_json TEXT NOT NULL,
     results_json TEXT NOT NULL,
     replay_json TEXT,
-    schedule_race_number INTEGER
+    schedule_race_number INTEGER,
+    championship_round INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS tournament_schedule (
@@ -117,6 +119,8 @@ CREATE TABLE IF NOT EXISTS season_history (
     third_team_id INTEGER,
     third_name TEXT,
     standings_json TEXT NOT NULL,
+    awards_json TEXT NOT NULL DEFAULT '[]',
+    summary_json TEXT NOT NULL DEFAULT '{}',
     completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -251,6 +255,11 @@ class Database:
                         "UPDATE races SET schedule_race_number=? WHERE id=?",
                         (int(schedule_row["race_number"]), int(race_row["id"])),
                     )
+        if "championship_round" not in race_columns:
+            # Existing tournament races already affected standings in older releases,
+            # so they are grandfathered as championship rounds. v0.4.7 explicitly
+            # marks new exhibition races inside scheduled championships as 0.
+            conn.execute("ALTER TABLE races ADD COLUMN championship_round INTEGER NOT NULL DEFAULT 1")
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_races_tournament_schedule_number "
             "ON races(tournament_id, schedule_race_number) WHERE schedule_race_number IS NOT NULL"
@@ -268,12 +277,44 @@ class Database:
             "last_minute_wins": "INTEGER NOT NULL DEFAULT 0",
             "pit_stops": "INTEGER NOT NULL DEFAULT 0",
             "near_misses": "INTEGER NOT NULL DEFAULT 0",
+            "fastest_laps": "INTEGER NOT NULL DEFAULT 0",
             "carryover_damage": "INTEGER NOT NULL DEFAULT 0",
             "peak_carryover_damage": "INTEGER NOT NULL DEFAULT 0",
         }
         for column, definition in stat_columns.items():
             if column not in columns:
                 conn.execute(f"ALTER TABLE tournament_teams ADD COLUMN {column} {definition}")
+                if column == "fastest_laps":
+                    # Backfill open/in-progress seasons from saved race results so a
+                    # mid-season v0.4.7 upgrade does not erase fastest-lap history.
+                    tournament_rows = conn.execute("SELECT DISTINCT tournament_id FROM races WHERE tournament_id IS NOT NULL").fetchall()
+                    for tournament_row in tournament_rows:
+                        tournament_id = int(tournament_row["tournament_id"])
+                        race_rows = conn.execute(
+                            "SELECT results_json FROM races WHERE tournament_id=? AND championship_round=1 ORDER BY id",
+                            (tournament_id,),
+                        ).fetchall()
+                        counts: dict[int, int] = {}
+                        for race_row in race_rows:
+                            try:
+                                results = json.loads(race_row["results_json"])
+                            except (TypeError, ValueError, json.JSONDecodeError):
+                                continue
+                            timed = [
+                                result for result in results
+                                if not result.get("dnf") and not result.get("disqualified") and result.get("fastest_lap") is not None
+                            ]
+                            if not timed:
+                                continue
+                            fastest = min(timed, key=lambda result: float(result.get("fastest_lap") or 10**9))
+                            team_id = int(fastest.get("team_id", 0) or 0)
+                            if team_id > 0:
+                                counts[team_id] = counts.get(team_id, 0) + 1
+                        for team_id, count in counts.items():
+                            conn.execute(
+                                "UPDATE tournament_teams SET fastest_laps=? WHERE tournament_id=? AND team_id=?",
+                                (count, tournament_id, team_id),
+                            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS team_profiles (
@@ -324,10 +365,17 @@ class Database:
                 third_team_id INTEGER,
                 third_name TEXT,
                 standings_json TEXT NOT NULL,
+                awards_json TEXT NOT NULL DEFAULT '[]',
+                summary_json TEXT NOT NULL DEFAULT '{}',
                 completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        season_columns = {row["name"] for row in conn.execute("PRAGMA table_info(season_history)").fetchall()}
+        if "awards_json" not in season_columns:
+            conn.execute("ALTER TABLE season_history ADD COLUMN awards_json TEXT NOT NULL DEFAULT '[]'")
+        if "summary_json" not in season_columns:
+            conn.execute("ALTER TABLE season_history ADD COLUMN summary_json TEXT NOT NULL DEFAULT '{}'")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS team_progress (
@@ -683,6 +731,29 @@ class Database:
         )
         return int(row["race_count"]) if row else 0
 
+    async def tournament_championship_race_count(self, tournament_id: int) -> int:
+        row = await self.fetchone(
+            "SELECT COUNT(*) AS race_count FROM races WHERE tournament_id=? AND championship_round=1",
+            (tournament_id,),
+        )
+        return int(row["race_count"]) if row else 0
+
+    async def tournament_races(self, tournament_id: int, *, championship_only: bool = False) -> list[sqlite3.Row]:
+        where = " AND championship_round=1" if championship_only else ""
+        return await self.fetchall(
+            f"""
+            SELECT id, tournament_id, track_key, seed, started_at, events_json, results_json,
+                   replay_json, schedule_race_number, championship_round
+            FROM races
+            WHERE tournament_id=?{where}
+            ORDER BY
+                CASE WHEN schedule_race_number IS NULL THEN 1 ELSE 0 END,
+                schedule_race_number,
+                id
+            """,
+            (tournament_id,),
+        )
+
     async def next_scheduled_track(self, tournament_id: int) -> tuple[int, str] | None:
         row = await self.fetchone(
             """
@@ -760,6 +831,24 @@ class Database:
             (tournament_id,),
         )
 
+    async def tournament_rivalries(self, tournament_id: int, limit: int = 5) -> list[sqlite3.Row]:
+        return await self.fetchall(
+            """
+            SELECT
+                r.*,
+                team_a.name AS team_a_name,
+                team_b.name AS team_b_name
+            FROM team_rivalries r
+            JOIN teams team_a ON team_a.id = r.team_a_id
+            JOIN teams team_b ON team_b.id = r.team_b_id
+            WHERE r.team_a_id IN (SELECT team_id FROM tournament_teams WHERE tournament_id=?)
+              AND r.team_b_id IN (SELECT team_id FROM tournament_teams WHERE tournament_id=?)
+            ORDER BY r.heat DESC, r.updated_at DESC
+            LIMIT ?
+            """,
+            (tournament_id, tournament_id, limit),
+        )
+
     @staticmethod
     def calculate_carryover_damage(result: dict) -> int:
         final_damage = max(0, min(100, int(result.get("damage", 0))))
@@ -769,6 +858,15 @@ class Database:
         return min(MAX_TOURNAMENT_CARRYOVER_DAMAGE, carryover)
 
     def _apply_race_results_conn(self, conn: sqlite3.Connection, tournament_id: int, results: list[dict]) -> None:
+        timed_finishers = [
+            result for result in results
+            if not result.get("dnf") and not result.get("disqualified") and result.get("fastest_lap") is not None
+        ]
+        fastest_team_id = None
+        if timed_finishers:
+            fastest_team_id = int(
+                min(timed_finishers, key=lambda result: float(result.get("fastest_lap") or 10**9))["team_id"]
+            )
         for r in results:
             carryover_damage = self.calculate_carryover_damage(r)
             cur = conn.execute(
@@ -787,6 +885,7 @@ class Database:
                     last_minute_wins = last_minute_wins + ?,
                     pit_stops = pit_stops + ?,
                     near_misses = near_misses + ?,
+                    fastest_laps = fastest_laps + ?,
                     carryover_damage = ?,
                     peak_carryover_damage = MAX(peak_carryover_damage, ?)
                 WHERE tournament_id=? AND team_id=?
@@ -798,6 +897,7 @@ class Database:
                     r["warnings"], 1 if r["dnf"] else 0, 1 if r["disqualified"] else 0,
                     r.get("overtakes", 0), r.get("crashes", 0), r.get("illegal_moves", 0),
                     r.get("last_minute_wins", 0), r.get("pit_stops", 0), r.get("near_misses", 0),
+                    1 if fastest_team_id is not None and int(r["team_id"]) == fastest_team_id else 0,
                     carryover_damage, carryover_damage,
                     tournament_id, r["team_id"],
                 ),
@@ -889,11 +989,26 @@ class Database:
                         (tournament_id, schedule_race_number),
                     ).fetchone():
                         raise ValueError("That scheduled race has already been completed.")
-                self._apply_race_results_conn(conn, tournament_id, results)
+                schedule_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) AS schedule_count FROM tournament_schedule WHERE tournament_id=?",
+                        (tournament_id,),
+                    ).fetchone()["schedule_count"]
+                )
+                # If a saved calendar exists, only an explicitly scheduled round can
+                # change championship standings/carryover. Ad-hoc races remain valid
+                # exhibitions. Legacy/manual tournaments without a schedule still
+                # score normally.
+                championship_round = 1 if schedule_race_number is not None or schedule_count == 0 else 0
+                if championship_round:
+                    self._apply_race_results_conn(conn, tournament_id, results)
                 cur = conn.execute(
                     """
-                    INSERT INTO races(tournament_id, track_key, seed, events_json, results_json, replay_json, schedule_race_number)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO races(
+                        tournament_id, track_key, seed, events_json, results_json,
+                        replay_json, schedule_race_number, championship_round
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         tournament_id,
@@ -903,6 +1018,7 @@ class Database:
                         json.dumps(results),
                         json.dumps(replay_data) if replay_data is not None else None,
                         schedule_race_number,
+                        championship_round,
                     ),
                 )
                 race_id = int(cur.lastrowid)
@@ -1280,11 +1396,11 @@ class Database:
                 if not tournament:
                     raise ValueError("Tournament not found.")
                 race_count = conn.execute(
-                    "SELECT COUNT(*) AS race_count FROM races WHERE tournament_id=?",
+                    "SELECT COUNT(*) AS race_count FROM races WHERE tournament_id=? AND championship_round=1",
                     (tournament_id,),
                 ).fetchone()
                 if int(race_count["race_count"]) <= 0:
-                    raise ValueError("A tournament cannot be finalised before at least one race has been completed.")
+                    raise ValueError("A championship cannot be finalised before at least one race has been completed as a scoring round.")
                 rows = conn.execute(
                     """
                     SELECT tt.*, t.name, t.driver_name, t.car_name
@@ -1297,6 +1413,13 @@ class Database:
                 ).fetchall()
                 if not rows:
                     raise ValueError("Tournament has no standings to finalise.")
+                existing_history = conn.execute(
+                    "SELECT 1 FROM season_history WHERE tournament_id=?",
+                    (tournament_id,),
+                ).fetchone()
+                if tournament["status"] == "closed" and existing_history:
+                    conn.rollback()
+                    return rows
                 standings = [
                     {
                         "team_id": int(row["team_id"]),
@@ -1305,18 +1428,50 @@ class Database:
                         "points": int(row["points"]),
                         "wins": int(row["wins"]),
                         "podiums": int(row["podiums"]),
+                        "fastest_laps": int(row["fastest_laps"]),
+                        "warnings": int(row["warnings"]),
+                        "dnfs": int(row["dnfs"]),
+                        "disqualifications": int(row["disqualifications"]),
+                        "overtakes": int(row["overtakes"]),
+                        "crashes": int(row["crashes"]),
+                        "illegal_moves": int(row["illegal_moves"]),
+                        "last_minute_wins": int(row["last_minute_wins"]),
+                        "pit_stops": int(row["pit_stops"]),
+                        "near_misses": int(row["near_misses"]),
+                        "peak_carryover_damage": int(row["peak_carryover_damage"]),
                     }
                     for row in rows
                 ]
+                race_rows = conn.execute(
+                    """
+                    SELECT id, tournament_id, track_key, seed, started_at, events_json, results_json,
+                           replay_json, schedule_race_number, championship_round
+                    FROM races
+                    WHERE tournament_id=?
+                    ORDER BY CASE WHEN schedule_race_number IS NULL THEN 1 ELSE 0 END,
+                             schedule_race_number, id
+                    """,
+                    (tournament_id,),
+                ).fetchall()
+                schedule_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) AS schedule_count FROM tournament_schedule WHERE tournament_id=?",
+                        (tournament_id,),
+                    ).fetchone()["schedule_count"]
+                )
+                from services.championship import build_season_awards, build_season_summary
+
+                awards = build_season_awards(rows, race_rows)
+                summary = build_season_summary(rows, race_rows, schedule_count)
                 top = standings[:3]
                 conn.execute(
                     """
                     INSERT INTO season_history(
                         tournament_id, tournament_name, champion_team_id, champion_name,
                         runner_up_team_id, runner_up_name, third_team_id, third_name,
-                        standings_json, completed_at
+                        standings_json, awards_json, summary_json, completed_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     ON CONFLICT(tournament_id) DO UPDATE SET
                         tournament_name = excluded.tournament_name,
                         champion_team_id = excluded.champion_team_id,
@@ -1326,6 +1481,8 @@ class Database:
                         third_team_id = excluded.third_team_id,
                         third_name = excluded.third_name,
                         standings_json = excluded.standings_json,
+                        awards_json = excluded.awards_json,
+                        summary_json = excluded.summary_json,
                         completed_at = CURRENT_TIMESTAMP
                     """,
                     (
@@ -1334,6 +1491,8 @@ class Database:
                         top[1]["team_id"] if len(top) > 1 else None, top[1]["name"] if len(top) > 1 else None,
                         top[2]["team_id"] if len(top) > 2 else None, top[2]["name"] if len(top) > 2 else None,
                         json.dumps(standings),
+                        json.dumps(awards),
+                        json.dumps(summary),
                     ),
                 )
                 conn.execute("UPDATE tournaments SET status='closed' WHERE id=?", (tournament_id,))
@@ -1357,18 +1516,35 @@ class Database:
                 "points": int(row["points"]),
                 "wins": int(row["wins"]),
                 "podiums": int(row["podiums"]),
+                "fastest_laps": int(row["fastest_laps"]),
+                "warnings": int(row["warnings"]),
+                "dnfs": int(row["dnfs"]),
+                "disqualifications": int(row["disqualifications"]),
+                "overtakes": int(row["overtakes"]),
+                "crashes": int(row["crashes"]),
+                "illegal_moves": int(row["illegal_moves"]),
+                "last_minute_wins": int(row["last_minute_wins"]),
+                "pit_stops": int(row["pit_stops"]),
+                "near_misses": int(row["near_misses"]),
+                "peak_carryover_damage": int(row["peak_carryover_damage"]),
             }
             for row in rows
         ]
+        races = await self.tournament_races(tournament_id)
+        schedule = await self.tournament_schedule(tournament_id)
+        from services.championship import build_season_awards, build_season_summary
+
+        awards = build_season_awards(rows, races)
+        summary = build_season_summary(rows, races, len(schedule))
         top = standings[:3]
         await self.execute(
             """
             INSERT INTO season_history(
                 tournament_id, tournament_name, champion_team_id, champion_name,
                 runner_up_team_id, runner_up_name, third_team_id, third_name,
-                standings_json, completed_at
+                standings_json, awards_json, summary_json, completed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(tournament_id) DO UPDATE SET
                 tournament_name = excluded.tournament_name,
                 champion_team_id = excluded.champion_team_id,
@@ -1378,6 +1554,8 @@ class Database:
                 third_team_id = excluded.third_team_id,
                 third_name = excluded.third_name,
                 standings_json = excluded.standings_json,
+                awards_json = excluded.awards_json,
+                summary_json = excluded.summary_json,
                 completed_at = CURRENT_TIMESTAMP
             """,
             (
@@ -1390,6 +1568,8 @@ class Database:
                 top[2]["team_id"] if len(top) > 2 else None,
                 top[2]["name"] if len(top) > 2 else None,
                 json.dumps(standings),
+                json.dumps(awards),
+                json.dumps(summary),
             ),
         )
 
@@ -1398,6 +1578,9 @@ class Database:
             "SELECT * FROM season_history ORDER BY completed_at DESC LIMIT ?",
             (limit,),
         )
+
+    async def season_history_entry(self, tournament_id: int) -> sqlite3.Row | None:
+        return await self.fetchone("SELECT * FROM season_history WHERE tournament_id=?", (tournament_id,))
 
     async def hall_of_fame_champions(self, limit: int = 5) -> list[sqlite3.Row]:
         return await self.fetchall(

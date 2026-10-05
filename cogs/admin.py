@@ -9,13 +9,14 @@ from discord.ext import commands
 
 from cogs.racing import TRACK_CHOICES, single_race_final_embed
 from cogs.teams import TeamWizardView
-from cogs.tournaments import TournamentWizardView, schedule_text, tournament_stats_embed
+from cogs.tournaments import TournamentWizardView, tournament_stats_embed
 from data.defaults import PARTS, TRACKS
 from models.enums import PartSlot
 from services.audit import audit_log
 from services.access import deny_admin_only, is_admin
 from services.ai_teams import ai_teams
 from services.builds import BuildService
+from services.championship import calendar_entries, calendar_text, team_form
 from services.formatting import Embeds
 from services.menu_cards import ADMIN_PANEL_BACKGROUND, render_admin_panel_card
 from services.media import MediaRegistry
@@ -638,11 +639,14 @@ class AdminPanelView(discord.ui.View):
             if not rows:
                 await select_interaction.response.send_message("No standings yet.", ephemeral=True)
                 return
+            races = await self.cog.bot.db.tournament_races(int(tournament["id"]), championship_only=True)
             lines = []
             for index, row in enumerate(rows, start=1):
+                form = " · ".join(team_form(races, int(row["team_id"]), 5)) or "—"
                 lines.append(
                     f"**{index}. {row['name']}** - {row['points']} pts | W {row['wins']} | Podiums {row['podiums']} | "
-                    f"Races {row['races']} | Car Dmg {row['carryover_damage']}%"
+                    f"FL {row['fastest_laps']} | DNF {row['dnfs']} | DSQ {row['disqualifications']}\n"
+                    f"Form: `{form}` | Car Dmg {row['carryover_damage']}%"
                 )
             view = PaginatedTextView(select_interaction.user.id, f"Standings: {tournament['name']}", lines, per_page=10)
             await select_interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
@@ -700,9 +704,8 @@ class AdminPanelView(discord.ui.View):
             if not rows:
                 await select_interaction.response.send_message("This tournament does not have a saved schedule.", ephemeral=True)
                 return
-            track_keys = [str(row["track_key"]) for row in rows]
-            completed_count = await self.cog.bot.db.tournament_scheduled_race_count(int(tournament["id"]))
-            await select_interaction.response.send_message(schedule_text(track_keys, completed_count), ephemeral=True)
+            races = await self.cog.bot.db.tournament_races(int(tournament["id"]))
+            await select_interaction.response.send_message(calendar_text(calendar_entries(rows, races)), ephemeral=True)
 
         await self._choose_tournament(interaction, "Choose a tournament schedule.", show_schedule)
 
@@ -726,9 +729,17 @@ class AdminPanelView(discord.ui.View):
                     view=None,
                 )
 
+            schedule = await self.cog.bot.db.tournament_schedule(int(tournament["id"]))
+            completed = await self.cog.bot.db.tournament_scheduled_race_count(int(tournament["id"]))
+            close_note = ""
+            if schedule and completed < len(schedule):
+                close_note = (
+                    f"\n\n⚠️ Only **{completed}/{len(schedule)} rounds** are complete. "
+                    "Closing now records a **Shortened Season** in Season History."
+                )
             embed = discord.Embed(
                 title="Confirm Tournament Close",
-                description=f"Close **#{tournament['id']} {tournament['name']}**?",
+                description=f"Close **#{tournament['id']} {tournament['name']}**?{close_note}",
                 color=discord.Color.red(),
             )
             await select_interaction.response.send_message(
@@ -884,13 +895,15 @@ class AdminPanelView(discord.ui.View):
             await interaction.response.send_message("Tournament grid is incomplete; all 10 entered teams must exist.", ephemeral=True)
             return
         carryover_damage = await self.cog.bot.db.tournament_carryover_damage(tournament_id)
+        schedule = await self.cog.bot.db.tournament_schedule(tournament_id)
+        title_prefix = "Exhibition Race" if schedule else "Tournament Race"
         engine = RaceEngine(track_key, teams, seed, initial_damage_by_team_id=carryover_damage)
         seed = engine.seed
         embed = race_preflight_embed(
             teams,
             TRACKS[track_key].name,
             engine.weather,
-            title="Confirm Tournament Race",
+            title=f"Confirm {title_prefix}",
             seed=seed,
             carryover_damage=carryover_damage,
             track_key=track_key,
@@ -904,7 +917,14 @@ class AdminPanelView(discord.ui.View):
                 return
             await confirm_interaction.response.edit_message(content="Tournament race confirmed. Posting to channel now.", embed=None, view=None)
             await audit_log(self.cog.bot, "Tournament Race Started", f"Tournament #{tournament_id} at {TRACKS[track_key].name} seed {seed}", confirm_interaction.user)
-            await tournaments_cog._run_tournament_race(confirm_interaction, tournament_id, track_key, team_ids, seed)
+            await tournaments_cog._run_tournament_race(
+                confirm_interaction,
+                tournament_id,
+                track_key,
+                team_ids,
+                seed,
+                title_prefix=title_prefix,
+            )
 
         await interaction.response.send_message(
             embed=embed,
@@ -920,10 +940,11 @@ class AdminPanelView(discord.ui.View):
 
         rows = await self.cog.bot.db.standings(int(tournament["id"]))
         race_count = await self.cog.bot.db.tournament_race_count(int(tournament["id"]))
+        championship_count = await self.cog.bot.db.tournament_championship_race_count(int(tournament["id"]))
         next_track = await self.cog.bot.db.next_scheduled_track(int(tournament["id"]))
         embed = discord.Embed(
             title=f"Admin Panel: {tournament['name']}",
-            description=f"Races run: **{race_count}**",
+            description=f"Championship races: **{championship_count}** | All saved tournament races: **{race_count}**",
             color=discord.Color.dark_gold(),
         )
         if next_track:

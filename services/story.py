@@ -1,4 +1,5 @@
 import discord
+import json
 
 from data.defaults import CREW_MEMBERS, PARTS
 from models.enums import CrewSlot, PartSlot
@@ -274,7 +275,30 @@ def season_history_lines(rows) -> list[str]:
             f"2nd {row['runner_up_name'] or '-'}",
             f"3rd {row['third_name'] or '-'}",
         ]
-        lines.append(f"**{row['tournament_name']}** - {', '.join(podium)}")
+        try:
+            summary = json.loads(row["summary_json"] or "{}") if "summary_json" in row.keys() else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            summary = {}
+        try:
+            awards = json.loads(row["awards_json"] or "[]") if "awards_json" in row.keys() else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            awards = []
+        status = str(summary.get("season_status", "complete")).title()
+        race_count = summary.get("championship_races")
+        extra_awards = [
+            award for award in awards
+            if award.get("key") in {"fastest_driver", "overtake_king", "best_pit_crew"}
+        ]
+        award_text = " | ".join(
+            f"{award.get('emoji', '🏅')} {award.get('name')}: {award.get('team_name')}"
+            for award in extra_awards[:3]
+        )
+        suffix = f"\nStatus: **{status}**"
+        if race_count is not None:
+            suffix += f" · Rounds: **{race_count}**"
+        if award_text:
+            suffix += f"\n{award_text}"
+        lines.append(f"**{row['tournament_name']}** - {', '.join(podium)}{suffix}")
     return lines
 
 

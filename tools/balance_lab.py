@@ -350,7 +350,7 @@ def run_lab(races_per_track: int = 120, slot_races_per_track: int = 35) -> dict:
 
 
 def _print_report(report: dict) -> None:
-    print("Rat Rod Racing Bot v0.4.6 Balance Lab (v0.4.3 balance baseline + sponsor guardrails)")
+    print("Rat Rod Racing Bot v0.4.7 Balance Lab (v0.4.3 balance baseline + sponsor guardrails)")
     print("\nStock archetype win rates")
     for name, rate in report["stock_archetypes"].items():
         print(f"  {name:16} {rate:6.2f}%")

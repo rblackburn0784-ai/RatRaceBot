@@ -7,6 +7,7 @@ from cogs.racing import RaceWizardView
 from cogs.teams import EditTeamWizardView, MyTeamActionsView, PitCrewWizardView, SponsorOfferActionView, TeamIdentityView, TeamWizardView, team_identity_embed
 from config import BOT_VERSION
 from services.access import is_admin
+from services.championship import championship_hub_embed
 from services.engagement import available_titles_for_level, level_for_xp, progress_embed, sponsor_offers_embed
 from services.menu_cards import MAIN_MENU_BACKGROUND, render_main_menu_card
 from services.scrutineering import scrutineering_embed
@@ -95,6 +96,7 @@ class MainMenuView(discord.ui.View):
             ("team_progress", "Team Progress", 1, discord.ButtonStyle.secondary),
             ("team_title", "Team Title", 2, discord.ButtonStyle.secondary),
             ("team_rivalries", "Team Rivalries", 2, discord.ButtonStyle.secondary),
+            ("championship", "Championship", 2, discord.ButtonStyle.primary),
             ("hall_of_fame", "Hall Of Fame", 2, discord.ButtonStyle.secondary),
             ("season_history", "Season History", 2, discord.ButtonStyle.secondary),
             ("team_identity", "Team Identity", 3, discord.ButtonStyle.secondary),
@@ -295,8 +297,37 @@ class MainMenuView(discord.ui.View):
 
         await self._with_team(interaction, show_rivalries)
 
+    async def _handle_championship(self, interaction: discord.Interaction) -> None:
+        tournament = await self.cog.bot.db.current_tournament()
+        if not tournament:
+            recent = await self.cog.bot.db.list_tournaments(include_closed=True, limit=1)
+            tournament = recent[0] if recent else None
+        if not tournament:
+            await interaction.response.send_message("No championship found.", ephemeral=True)
+            return
+        tid = int(tournament["id"])
+        await interaction.response.send_message(
+            embed=championship_hub_embed(
+                tournament,
+                await self.cog.bot.db.standings(tid),
+                await self.cog.bot.db.tournament_schedule(tid),
+                await self.cog.bot.db.tournament_races(tid),
+                await self.cog.bot.db.tournament_rivalries(tid, limit=5),
+            ),
+            ephemeral=True,
+        )
+
     async def _handle_hall_of_fame(self, interaction: discord.Interaction) -> None:
-        stat_keys = ("wins", "podiums", "points", "overtakes", "crashes", "illegal_moves")
+        stat_keys = (
+            "wins",
+            "overtakes",
+            "last_minute_wins",
+            "pit_stops",
+            "near_misses",
+            "crashes",
+            "illegal_moves",
+            "peak_damage",
+        )
         stat_leaders = {
             key: await self.cog.bot.db.hall_of_fame_stat_leaders(key, limit=1)
             for key in stat_keys

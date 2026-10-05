@@ -8,7 +8,7 @@ from models.enums import CrewSlot, PartSlot
 from services.balance import crew_effect_for_member, track_part_adjustment
 from services.builds import BuildService
 
-GARAGE_VERSION = "0.4.6"
+GARAGE_VERSION = "0.4.7"
 SETUP_PRESETS = ("Street", "Dirt", "Wet", "High-Speed", "Custom")
 
 

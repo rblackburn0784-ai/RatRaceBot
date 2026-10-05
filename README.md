@@ -17,14 +17,27 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - Single-race wizard for drivers with 5, 7, or 10 lap races and Full AI, Players Only, or Players Plus AI modes.
 - Tournament system for 10-team scheduled championships with short, medium, and long formats.
 - Tournament scoring gives 10 points for 1st down through the classified finishers; DNFs and DSQs score 0.
-- Tournament stat tracking for overtakes, crashes, illegal moves, last-minute wins, near misses, and pit stops.
-- Tournament-only persistent damage carries a repaired, capped slice of car damage into the next race for extra stakes without runaway punishment.
+- Tournament stat tracking for wins, podiums, race fastest laps, DNFs/DSQs, overtakes, crashes, illegal moves, last-minute wins, near misses, and pit stops.
+- Tournament-only persistent damage carries a repaired, capped slice of car damage into the next championship round for extra stakes without runaway punishment. Exhibition races do not alter carryover damage.
 - Media hooks for GIFs and audio clips you create yourself.
 - SQLite persistence.
 - Discord ownership controls: admins can use all commands, while regular drivers can create one linked team and manage only their own team/parts wizards.
 - Deterministic race seed plus full build/laps/damage replay snapshot saved for new races.
 - `/race_replay` is non-destructive: it does not duplicate career stats, XP, achievements, sponsors, fatigue, or track records.
 
+
+## v0.4.7 championships & season structure
+
+- `/championship` opens the public **Blacktop Championship Hub** with round progress, next venue, standings, last-three form, fastest-lap totals, title picture, top-two head-to-head, rivalry watch and calendar state.
+- Saved schedules now define official championship rounds. Once a calendar exists, unscheduled `/tournament_start_race` runs are exhibitions: they are saved for history but do **not** change championship points, fastest-lap totals, carryover damage or scheduled progress.
+- Legacy/manual tournaments without a saved calendar still support scoring manual races.
+- Tournament standings now track **race fastest laps**, DNFs and DSQs alongside wins, podiums and form.
+- Title mathematics identifies live contenders, mathematically clinched championships and next-round clinch requirements such as **P2 or better** when the points permit it.
+- The tournament calendar now shows completed rounds, the next round, queued rounds and winners from completed events.
+- Final Season History snapshots permanently store expanded standings, season status, championship totals and the complete season-awards board.
+- Season awards include **Champion, Runner-Up, Most Wins, Most Podiums, Fastest Driver, Overtake King, Cleanest Team, Dirtiest Team, Most Reliable, Best Pit Crew, Giant Killer, and Hard Luck Award**.
+- Early manual closure remains supported but is explicitly stored as a **Shortened Season**; completing the final scheduled round still auto-finalises and closes the championship.
+- Championship viewing commands are public; creation, team entry, race control and closure remain admin-only.
 
 ## v0.4.6 progression, sponsors & team identity
 
@@ -168,12 +181,13 @@ python tools/balance_lab.py --quick
 - `/tournament_wizard` — create a tournament with 10 teams and a short, medium, or long track schedule.
 - `/tournament_create` — create a tournament.
 - `/tournament_add_team` — add team to tournament.
-- `/tournament_start_race` — run a manual tournament race using all 10 entered teams; manual races do not consume scheduled race slots.
+- `/tournament_start_race` — run a manual race using all 10 entered teams. In a scheduled championship this is an exhibition; in a legacy/manual tournament it remains a scoring race.
 - `/tournament_next_race` — run the next race from the saved track schedule.
-- `/tournament_schedule` — show the saved tournament track order.
-- `/tournament_standings` — show points table.
+- `/tournament_schedule` — show the championship calendar with completed/next/queued rounds and completed-round winners.
+- `/tournament_standings` — show the public points table with wins, podiums, fastest laps, DNFs/DSQs and recent form.
 - `/tournament_stats` — show current tournament points and fun stat leaders.
-- `/season_history` — show completed tournament champions and podiums.
+- `/championship` — public Championship Hub with calendar, title picture, form, head-to-head and rivalry watch.
+- `/season_history` — show completed championship podiums plus saved season highlights.
 - Final scheduled race — atomically finalises standings, saves Season History, closes the tournament, then posts/pins the final awards report.
 - `/tournament_close` — manually finalise standings, save Season History, and close a tournament after at least one race.
 
@@ -191,12 +205,12 @@ python tools/balance_lab.py --quick
 - Discord users with Administrator permission can use every command.
 - Role IDs listed in `ADMIN_ROLE_IDS` can also use admin commands.
 - If `AUDIT_LOG_CHANNEL_ID` is set, key admin actions are logged there.
-- Regular drivers can only use `/menu`, `/status`, `/team_wizard`, `/team_edit_wizard`, `/parts_wizard`, `/pit_crew_wizard`, `/my_team`, `/scrutineering`, `/team_reputation`, `/team_rivalries`, `/team_progress`, `/team_title`, `/team_identity`, `/sponsor_offers`, `/track_records`, `/race_tracks`, `/track_cards`, and `/race_wizard`.
+- Regular drivers can use `/menu`, `/status`, `/team_wizard`, `/team_edit_wizard`, `/parts_wizard`, `/pit_crew_wizard`, `/my_team`, `/scrutineering`, `/team_reputation`, `/team_rivalries`, `/team_progress`, `/team_title`, `/team_identity`, `/sponsor_offers`, `/track_records`, `/race_tracks`, `/track_cards`, `/race_wizard`, `/championship`, `/tournament_standings`, `/tournament_stats`, `/tournament_schedule`, and `/season_history`.
 - Regular drivers can create one team, linked to their Discord user ID.
 - Regular drivers can only edit their own linked team.
 - Team profile edits are locked while that team is in an open tournament, but parts are still editable.
 - Pit crew loadouts are also editable during tournaments.
-- Tournaments and direct/admin race commands remain admin-only.
+- Tournament **management** and direct/admin race commands remain admin-only; championship viewing commands are public.
 - Team reputation and rivalries update automatically after saved races.
 - AI teams have racing personalities such as Reckless, Defensive, Pit-Focused, Showboat, Reliable, and Glass Cannon.
 
@@ -247,4 +261,4 @@ The bot will send GIFs where available. Audio support is left as a hook: the cod
 
 ## Notes
 
-Current code version: **v0.4.6 — Progression, Sponsors & Team Identity**. Progression unlocks choices rather than raw performance, sponsor contracts are small two-sided situational modifiers, and team identity is persistent but cosmetic. The v0.4.3 Balance Lab now includes sponsor guardrails while v0.4.4 presentation and v0.4.5 garage gameplay remain intact. See `UPGRADE_v0.4.6.md` and `PROGRESSION_v0.4.6.md` for details.
+Current code version: **v0.4.7 — Championships & Season Structure**. Scheduled rounds now define the championship, public season views expose form/title/head-to-head context, and permanent Season History includes full awards and summary snapshots. v0.4.3 balance, v0.4.4 presentation, v0.4.5 garage gameplay and v0.4.6 horizontal progression remain intact. See `UPGRADE_v0.4.7.md` and `CHAMPIONSHIPS_v0.4.7.md` for details.
