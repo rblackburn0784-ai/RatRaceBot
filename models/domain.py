@@ -74,6 +74,7 @@ class RaceEvent:
     actor: dict | None = None
     target: dict | None = None
     participants: list[dict] = field(default_factory=list)
+    context: dict = field(default_factory=dict)
 
 @dataclass(slots=True)
 class RaceResult:

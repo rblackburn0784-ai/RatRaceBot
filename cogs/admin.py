@@ -821,7 +821,7 @@ class AdminPanelView(discord.ui.View):
             return
         engine = RaceEngine(track_key, teams, seed)
         seed = engine.seed
-        embed = race_preflight_embed(teams, TRACKS[track_key].name, engine.weather, title="Confirm Race Quick", seed=seed)
+        embed = race_preflight_embed(teams, TRACKS[track_key].name, engine.weather, title="Confirm Race Quick", seed=seed, track_key=track_key, laps=TRACKS[track_key].laps)
 
         async def run(confirm_interaction: discord.Interaction):
             racing_cog = self._racing_cog()
@@ -841,7 +841,7 @@ class AdminPanelView(discord.ui.View):
     async def _confirm_demo_race(self, interaction: discord.Interaction, track_key: str, preview_teams) -> None:
         engine = RaceEngine(track_key, preview_teams)
         seed = engine.seed
-        embed = race_preflight_embed(preview_teams, TRACKS[track_key].name, engine.weather, title="Confirm Demo Race", seed=seed)
+        embed = race_preflight_embed(preview_teams, TRACKS[track_key].name, engine.weather, title="Confirm Demo Race", seed=seed, track_key=track_key, laps=TRACKS[track_key].laps)
 
         async def run(confirm_interaction: discord.Interaction):
             await confirm_interaction.response.edit_message(content="Demo race confirmed. Posting to channel now.", embed=None, view=None)
@@ -893,6 +893,8 @@ class AdminPanelView(discord.ui.View):
             title="Confirm Tournament Race",
             seed=seed,
             carryover_damage=carryover_damage,
+            track_key=track_key,
+            laps=engine.laps,
         )
 
         async def run(confirm_interaction: discord.Interaction):

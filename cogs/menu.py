@@ -448,20 +448,20 @@ class MenuCog(commands.Cog):
     async def version(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="Rat Rod Racing Bot",
-            description=f"Version {BOT_VERSION} - balance & competitive integrity",
+            description=f"Version {BOT_VERSION} - race presentation & strategy",
             color=discord.Color.dark_gold(),
         )
         embed.add_field(
             name="Recent Changes",
             value=(
-                "Seven archetypes rebalanced across the full championship schedule\n"
-                "Smooth diminishing-return pace model replaces the hard lap-time floor\n"
-                "All six driver stats now have useful, trade-off based race roles\n"
-                "Pit crew changed from raw stat stacking to specialist race effects\n"
-                "Mechanical Strain + Tuning Efficiency stop all-slot super-builds\n"
-                "Track/weather specialisation makes setup choice venue-dependent\n"
-                "Illegal parts remain +6% DSQ each with compounding build strain\n"
-                "Automated Balance Lab protects future competitive integrity"
+                "Qualitative pre-race setup cards show track fit without exposing raw formulas\n"
+                "Race phases: Start, Opening, Mid-Race, Pit Window, Closing and Final Lap\n"
+                "Live leaderboards show estimated gaps plus damage, tyres and strain\n"
+                "Pit stops report service quality, approximate time cost and position swing\n"
+                "Contextual Why notes explain which race factors shaped major events\n"
+                "Final classification clearly separates finishers, DNFs and DSQs\n"
+                "Fastest lap and new track-record callouts are always surfaced\n"
+                "v0.4.3 competitive balance remains unchanged and Balance Lab protected"
             ),
             inline=False,
         )

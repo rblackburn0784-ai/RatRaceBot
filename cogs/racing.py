@@ -17,6 +17,7 @@ from services.preflight import race_preflight_embed
 from services.race_engine import RaceEngine
 from services.race_report import send_race_report
 from services.race_rules import official_podium
+from services.race_presentation import classification_embed
 from services.race_snapshot import build_replay_snapshot, restore_replay_snapshot
 from services.scrutineering import scrutineering_embed
 from services.streamer import RaceStreamer
@@ -68,41 +69,25 @@ def _single_race_award_line(results, stat_key: str, label: str, emoji: str) -> s
     return f"{emoji} **{label}:** {winner.team_name} - {getattr(winner, stat_key)}"
 
 
-def single_race_final_embed(results, title: str) -> discord.Embed:
+def single_race_final_embed(results, events, title: str) -> discord.Embed:
+    embed = classification_embed(results, events, title)
     ordered = sorted(results, key=lambda result: result.position)
     podium_results = official_podium(ordered)
-    embed = discord.Embed(
-        title=f"Final Results: {title}",
-        description="Race complete. Here is the podium and chaos board.",
-    )
     podium_lines = []
     for index, result in enumerate(podium_results, start=1):
         medal, medal_label = PODIUM_MEDALS[index - 1]
         podium_lines.append(
-            f"{medal} **{medal_label}** - **{result.team_name}** ({result.driver_name}) - {result.points} pts"
+            f"{medal} **{medal_label}** — **{result.team_name}** ({result.driver_name}) — {result.points} pts"
         )
-    embed.add_field(
-        name="Top 3 Racers",
-        value="\n".join(podium_lines) if podium_lines else "No racers finished.",
-        inline=False,
-    )
-
-    placement_lines = [
-        f"**{index}.** {result.team_name} - {result.points} pts"
-        for index, result in enumerate(ordered[3:10], start=4)
-    ]
-    embed.add_field(
-        name="4th-10th Place",
-        value="\n".join(placement_lines) if placement_lines else "No other racers placed.",
-        inline=False,
-    )
+    if podium_lines:
+        embed.add_field(name="Podium", value="\n".join(podium_lines), inline=False)
 
     award_lines = [
         _single_race_award_line(ordered, stat_key, label, emoji)
         for stat_key, label, emoji in SINGLE_RACE_AWARDS
     ]
     embed.add_field(name="Race Awards", value="\n".join(award_lines), inline=False)
-    embed.set_footer(text="Single race report")
+    embed.set_footer(text="v0.4.4 race presentation — official classification")
     return embed
 
 
@@ -464,7 +449,7 @@ class RacingCog(commands.Cog):
                 race_laps=laps,
                 predictions=predictions,
                 rivalry_watch=None if persist else [],
-                final_embed=single_race_final_embed(results, result_title),
+                final_embed=single_race_final_embed(results, events, result_title),
                 award_rewards=persist,
             )
             if stream_error:
@@ -538,6 +523,8 @@ class RacingCog(commands.Cog):
             title="Race Preflight",
             seed=seed,
             carryover_damage=initial_damage_by_team_id,
+            track_key=track_key,
+            laps=laps or TRACKS[track_key].laps,
         )
 
         async def run(confirm_interaction: discord.Interaction):
@@ -607,7 +594,7 @@ class RacingCog(commands.Cog):
         teams = existing[:10] if len(existing) >= 10 else [*existing, *ai_teams(10 - len(existing), f"demo-preview-{len(existing)}")]
         engine = RaceEngine(track_key, teams)
         seed = engine.seed
-        embed = race_preflight_embed(teams, TRACKS[track_key].name, engine.weather, title="Demo Race Preflight", seed=seed)
+        embed = race_preflight_embed(teams, TRACKS[track_key].name, engine.weather, title="Demo Race Preflight", seed=seed, track_key=track_key, laps=TRACKS[track_key].laps)
 
         async def run(confirm_interaction: discord.Interaction):
             self._mark_cooldown(confirm_interaction.user.id)

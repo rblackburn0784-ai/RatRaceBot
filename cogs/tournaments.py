@@ -386,6 +386,8 @@ class TournamentsCog(commands.Cog):
             title=f"Confirm {title_prefix}",
             seed=seed,
             carryover_damage=carryover_damage,
+            track_key=track_key,
+            laps=engine.laps,
         )
 
         async def run(confirm_interaction: discord.Interaction):

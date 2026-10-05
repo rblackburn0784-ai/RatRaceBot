@@ -17,6 +17,7 @@ from services.balance import (
     track_part_adjustment,
     trait_effects,
 )
+from services.race_presentation_core import leaderboard_snapshot, phase_for_lap
 
 CAR_COLOURS = (
     "red",
@@ -224,6 +225,7 @@ class RaceEngine:
         self._crew_cache: dict[int, object] = {}
         self._trait_cache: dict[int, object] = {}
         self._strain_cache: dict[int, float] = {}
+        self._pending_pit_events: list[tuple[RaceState, RaceEvent, int]] = []
 
     def _roll(self, sides: int = 20) -> int:
         return self.rng.randint(1, sides)
@@ -252,6 +254,25 @@ class RaceEngine:
             "colour": state.car_colour,
         }
 
+    def _event_reason(self, event_type: EventType, actor: RaceState | None) -> str | None:
+        if actor is None:
+            return None
+        if event_type == EventType.START:
+            return "Launch pace is shaped by acceleration and Reflexes while the field is tightly packed."
+        if event_type == EventType.OVERTAKE:
+            return "Traffic pace, Aggression, Reflexes and spotter support helped create this passing chance."
+        if event_type in {EventType.DAMAGE_MINOR, EventType.DAMAGE_MAJOR, EventType.DESTROYED}:
+            return "Track hazards test Handling and Reflexes; durability, tyre condition and mechanical strain decide how costly the hit becomes."
+        if event_type == EventType.PIT_STOP:
+            return "Damage or tyre wear triggered the stop; Mechanics, pit-friendliness and specialist crew quality shape the recovery time."
+        if event_type in {EventType.ILLEGAL_MOVE, EventType.WARNING, EventType.DISQUALIFIED}:
+            return "Aggressive racing can create opportunities but attracts official attention; Nerve helps keep the driver under control."
+        if event_type == EventType.LAST_MINUTE_WIN:
+            return "Late-race Nerve, remaining grip and momentum matter most when the finish is close."
+        if event_type in {EventType.FINISH, EventType.PODIUM}:
+            return "The final order reflects the whole run: pace, reliability, tyre life, pit work and late-race composure."
+        return None
+
     def _comment(
         self,
         event_type: EventType,
@@ -261,19 +282,27 @@ class RaceEngine:
         actor: RaceState | None = None,
         target: RaceState | None = None,
         participants: list[RaceState] | None = None,
-    ) -> None:
-        self.events.append(
-            RaceEvent(
-                event_type=event_type,
-                lap=lap,
-                message=message,
-                media_key=media_key or event_type.value,
-                audio_key=event_type.value,
-                actor=self._event_car(actor) if actor else None,
-                target=self._event_car(target) if target else None,
-                participants=[self._event_car(state) for state in participants] if participants else [],
-            )
+        context: dict | None = None,
+    ) -> RaceEvent:
+        event_context = dict(context or {})
+        event_context.setdefault("phase", phase_for_lap(lap, self.laps))
+        event_context.setdefault("laps", self.laps)
+        reason = self._event_reason(event_type, actor)
+        if reason:
+            event_context.setdefault("why", reason)
+        event = RaceEvent(
+            event_type=event_type,
+            lap=lap,
+            message=message,
+            media_key=media_key or event_type.value,
+            audio_key=event_type.value,
+            actor=self._event_car(actor) if actor else None,
+            target=self._event_car(target) if target else None,
+            participants=[self._event_car(state) for state in participants] if participants else [],
+            context=event_context,
         )
+        self.events.append(event)
+        return event
 
     def _colour_label(self, state: RaceState) -> str:
         emoji = COLOUR_EMOJIS.get(state.car_colour, "🏎️")
@@ -622,6 +651,9 @@ class RaceEngine:
         traits = self._trait_effects(state.team)
         strain = self._effective_strain(state.team)
         state.pit_stops += 1
+        position_before = state.position
+        damage_before = state.damage
+        tyres_before = state.tyre_wear
         pit_bonus = (
             drv.mechanics * 0.72
             + soft_stat(car.pit_friendliness) * 0.58
@@ -640,8 +672,9 @@ class RaceEngine:
             tyres = self.rng.randint(35, 55)
             state.damage = max(0, state.damage - fixed)
             state.tyre_wear = max(0, state.tyre_wear - tyres)
-            state.total_time += time_cost
-            self._comment(
+            actual_cost = time_cost
+            state.total_time += actual_cost
+            event = self._comment(
                 EventType.PIT_STOP,
                 lap,
                 self._line(
@@ -656,14 +689,16 @@ class RaceEngine:
                 ),
                 media_key,
                 actor=state,
+                context={"pit_quality": "Fast", "time_cost": round(actual_cost, 2)},
             )
         elif pit_roll >= 12:
             fixed = self.rng.randint(10, 24)
             tyres = self.rng.randint(20, 40)
             state.damage = max(0, state.damage - fixed)
             state.tyre_wear = max(0, state.tyre_wear - tyres)
-            state.total_time += time_cost + 4
-            self._comment(
+            actual_cost = time_cost + 4
+            state.total_time += actual_cost
+            event = self._comment(
                 EventType.PIT_STOP,
                 lap,
                 self._line(
@@ -678,12 +713,14 @@ class RaceEngine:
                 ),
                 media_key,
                 actor=state,
+                context={"pit_quality": "Solid", "time_cost": round(actual_cost, 2)},
             )
         else:
             fixed = self.rng.randint(0, 10)
             state.damage = max(0, state.damage - fixed)
-            state.total_time += time_cost + 12
-            self._comment(
+            actual_cost = time_cost + 12
+            state.total_time += actual_cost
+            event = self._comment(
                 EventType.PIT_STOP,
                 lap,
                 self._line(
@@ -697,7 +734,19 @@ class RaceEngine:
                 ),
                 media_key,
                 actor=state,
+                context={"pit_quality": "Botched", "time_cost": round(actual_cost, 2)},
             )
+        event.context.update(
+            {
+                "position_before": position_before,
+                "damage_before": damage_before,
+                "damage_after": state.damage,
+                "tyres_before": tyres_before,
+                "tyres_after": state.tyre_wear,
+                "strategic_stop": bool(strategic and not needs_pit),
+            }
+        )
+        self._pending_pit_events.append((state, event, position_before))
 
     def _order_states(self) -> None:
         # Classification rule: finishers/running cars first, then DNFs, then DSQs.
@@ -846,6 +895,20 @@ class RaceEngine:
             previous = {s.team.id: s.position for s in self.states}
             previous_order = list(self.states)
             self._order_states()
+            for pit_state, pit_event, position_before in list(self._pending_pit_events):
+                if pit_event.lap != lap:
+                    continue
+                position_after = pit_state.position
+                delta = position_before - position_after
+                pit_event.context["position_after"] = position_after
+                pit_event.context["position_delta"] = delta
+                if delta > 0:
+                    pit_event.context["pit_position_text"] = f"gained {delta} place(s) through the pit cycle"
+                elif delta < 0:
+                    pit_event.context["pit_position_text"] = f"lost {abs(delta)} place(s) through the pit cycle"
+                else:
+                    pit_event.context["pit_position_text"] = "held position through the pit cycle"
+            self._pending_pit_events = [item for item in self._pending_pit_events if item[1].lap != lap]
             for s in self.states:
                 old = previous.get(s.team.id, s.position)
                 if not s.dnf and not s.disqualified and s.position < old:
@@ -902,6 +965,7 @@ class RaceEngine:
                     ),
                     self._media_key("lap_leader", leader.car_colour),
                     actor=leader,
+                    context={"leaderboard": leaderboard_snapshot(self.states, self.laps)},
                 )
 
         self._order_states()

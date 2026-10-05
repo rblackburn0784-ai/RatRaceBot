@@ -26,6 +26,19 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - `/race_replay` is non-destructive: it does not duplicate career stats, XP, achievements, sponsors, fatigue, or track records.
 
 
+## v0.4.4 race presentation & strategy
+
+- Pre-race confirmation shows track character, weather, race length and a qualitative setup card for each entrant.
+- Setup cards show broad straight-line, cornering, reliability and pit-work ratings plus Mechanical Strain and Tuning Efficiency without exposing the simulation formula.
+- Venue/weather-specialist parts are called out as useful or compromised for the selected race, along with heat, reliability, illegal-part and strain warnings.
+- Live race presentation is split into **Start → Opening Laps → Mid-Race → Pit Window → Closing Laps → Final Lap** with phase-specific guidance explaining which driver/team factors matter.
+- Live leaderboard snapshots appear at sparse checkpoints and show estimated gap-to-leader, damage, tyre wear and strain state for the full field.
+- Major race events can include a short qualitative **Why** explanation.
+- Pit stops now carry service quality, approximate time cost, damage/tyre recovery and position change through the pit cycle.
+- Final classification always posts even when the Blacktop Gazette image is available, with explicit DNF/DSQ reporting and fastest-lap callout.
+- New track records are posted explicitly instead of being hidden inside the newspaper render.
+- v0.4.4 changes presentation only: deterministic race results remain parity-identical to the v0.4.3 balance baseline for the same seeds.
+
 ## v0.4.3 balance rules
 
 - All seven stock archetypes are calibrated against the complete 10-track schedule. The release Balance Lab target is **10-18% overall win rate per archetype** with equal drivers.
@@ -209,4 +222,4 @@ The bot will send GIFs where available. Audio support is left as a hook: the cod
 
 ## Notes
 
-Current code version: **v0.4.3 — Balance & Competitive Integrity**. The engine is intentionally readable, tunable, deterministic, and protected by the Balance Lab plus regression tests. Core balance values live in `data/defaults.py` and `services/balance.py`. See `UPGRADE_v0.4.3.md` for upgrade notes.
+Current code version: **v0.4.4 — Race Presentation & Strategy**. The v0.4.3 competitive balance model is intentionally unchanged; v0.4.4 adds qualitative pre-race guidance, phase-aware live presentation, leaderboard snapshots, pit-cycle context and stronger final classification. Balance remains protected by the existing Balance Lab and regression tests. See `UPGRADE_v0.4.4.md` for upgrade notes.
