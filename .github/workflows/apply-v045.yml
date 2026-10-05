@@ -26,26 +26,11 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           import base64, hashlib, lzma
-          names = [f'chunk-{i:03d}.b64' for i in range(6)]
-          expected_chunks = {
-              'chunk-000.b64': '83bf83181e715af5344f048e41eb089a4a0edf48e1be4bc5cb0798991aadb970',
-              'chunk-001.b64': '56b9563643849080a400ea0d41d061c0a567ef7492420eebd8276c3e575f7d67',
-              'chunk-002.b64': '3cdceb3460d748e4d71192ad268581217463eb359a95f0b738eae1a69ce20e95',
-              'chunk-003.b64': '4a65988b10e71d27864c6a905949b66f24363026d8467af11e7dd824b7e95a0a',
-              'chunk-004.b64': '59ff0cfd01402846360536733d9a2798aae48cf3e793060beec7b64cd80ad0c5',
-              'chunk-005.b64': '1104459175de65e02087c072ca5a58a3fd1dee4b9633e6131641b45355ca82c1',
-          }
+          names = ['chunk-000.b64'] + [f'tail-{i:03d}.b64' for i in range(19)]
           paths = [Path('.rr-update') / name for name in names]
           missing = [str(p) for p in paths if not p.exists()]
           if missing:
               raise SystemExit(f'Missing patch chunks: {missing}')
-          for p in paths:
-              text = p.read_text(encoding='utf-8')
-              actual = hashlib.sha256(text.encode()).hexdigest()
-              expected = expected_chunks[p.name]
-              print(f'{p}: chars={len(text)} sha256={actual}')
-              if actual != expected:
-                  raise SystemExit(f'Chunk checksum mismatch for {p.name}: {actual}')
           encoded = ''.join(p.read_text(encoding='utf-8') for p in paths)
           payload = base64.b64decode(encoded, validate=True)
           expected = '085ebba4394b4063bac0e6c965a9be09ab5dc9f326a9a80e302a84a8c68fed4c'
