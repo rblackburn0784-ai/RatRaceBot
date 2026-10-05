@@ -18,6 +18,7 @@ from services.balance import (
     trait_effects,
 )
 from services.race_presentation_core import leaderboard_snapshot, phase_for_lap
+from services.garage import crew_contributors
 
 CAR_COLOURS = (
     "red",
@@ -257,21 +258,35 @@ class RaceEngine:
     def _event_reason(self, event_type: EventType, actor: RaceState | None) -> str | None:
         if actor is None:
             return None
+        purpose = None
         if event_type == EventType.START:
-            return "Launch pace is shaped by acceleration and Reflexes while the field is tightly packed."
-        if event_type == EventType.OVERTAKE:
-            return "Traffic pace, Aggression, Reflexes and spotter support helped create this passing chance."
-        if event_type in {EventType.DAMAGE_MINOR, EventType.DAMAGE_MAJOR, EventType.DESTROYED}:
-            return "Track hazards test Handling and Reflexes; durability, tyre condition and mechanical strain decide how costly the hit becomes."
-        if event_type == EventType.PIT_STOP:
-            return "Damage or tyre wear triggered the stop; Mechanics, pit-friendliness and specialist crew quality shape the recovery time."
-        if event_type in {EventType.ILLEGAL_MOVE, EventType.WARNING, EventType.DISQUALIFIED}:
-            return "Aggressive racing can create opportunities but attracts official attention; Nerve helps keep the driver under control."
-        if event_type == EventType.LAST_MINUTE_WIN:
-            return "Late-race Nerve, remaining grip and momentum matter most when the finish is close."
-        if event_type in {EventType.FINISH, EventType.PODIUM}:
-            return "The final order reflects the whole run: pace, reliability, tyre life, pit work and late-race composure."
-        return None
+            reason = "Launch pace is shaped by acceleration and Reflexes while the field is tightly packed."
+            purpose = "start"
+        elif event_type == EventType.OVERTAKE:
+            reason = "Traffic pace, Aggression, Reflexes and spotter support helped create this passing chance."
+            purpose = "overtake"
+        elif event_type in {EventType.DAMAGE_MINOR, EventType.DAMAGE_MAJOR, EventType.DESTROYED}:
+            reason = "Track hazards test Handling and Reflexes; durability, tyre condition and mechanical strain decide how costly the hit becomes."
+            purpose = "hazard"
+        elif event_type == EventType.PIT_STOP:
+            reason = "Damage or tyre wear triggered the stop; Mechanics, pit-friendliness and specialist crew quality shape the recovery time."
+            purpose = "pit"
+        elif event_type in {EventType.ILLEGAL_MOVE, EventType.WARNING, EventType.DISQUALIFIED}:
+            reason = "Aggressive racing can create opportunities but attracts official attention; Nerve helps keep the driver under control."
+            purpose = "penalty"
+        elif event_type == EventType.LAST_MINUTE_WIN:
+            reason = "Late-race Nerve, remaining grip and momentum matter most when the finish is close."
+            purpose = "finish"
+        elif event_type in {EventType.FINISH, EventType.PODIUM}:
+            reason = "The final order reflects the whole run: pace, reliability, tyre life, pit work and late-race composure."
+            purpose = "finish"
+        else:
+            return None
+
+        contributors = crew_contributors(actor.team, purpose) if purpose else []
+        if contributors:
+            reason += " Crew contribution: " + ", ".join(contributors) + "."
+        return reason
 
     def _comment(
         self,
@@ -290,6 +305,26 @@ class RaceEngine:
         reason = self._event_reason(event_type, actor)
         if reason:
             event_context.setdefault("why", reason)
+        if actor:
+            purpose_map = {
+                EventType.START: "start",
+                EventType.OVERTAKE: "overtake",
+                EventType.DAMAGE_MINOR: "hazard",
+                EventType.DAMAGE_MAJOR: "hazard",
+                EventType.DESTROYED: "hazard",
+                EventType.PIT_STOP: "pit",
+                EventType.ILLEGAL_MOVE: "penalty",
+                EventType.WARNING: "penalty",
+                EventType.DISQUALIFIED: "penalty",
+                EventType.LAST_MINUTE_WIN: "finish",
+                EventType.FINISH: "finish",
+                EventType.PODIUM: "finish",
+            }
+            purpose = purpose_map.get(event_type)
+            if purpose:
+                contributors = crew_contributors(actor.team, purpose)
+                if contributors:
+                    event_context.setdefault("crew_contributors", contributors)
         event = RaceEvent(
             event_type=event_type,
             lap=lap,

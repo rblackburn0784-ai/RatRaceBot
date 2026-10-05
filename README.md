@@ -26,6 +26,18 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - `/race_replay` is non-destructive: it does not duplicate career stats, XP, achievements, sponsors, fatigue, or track records.
 
 
+## v0.4.5 garage, parts & crew gameplay
+
+- `/my_team` now opens **THE GARAGE** with all eight part slots, Mechanical Strain, Tuning Efficiency, illegal-hardware risk and broad **Fast Track / Technical / Wet / Rough** setup ratings.
+- Garage controls expose **Fit Part**, **Remove Part**, **Compare Part**, **Save Setup**, **Load Setup**, **Ask Crew Chief**, and **Pit Crew** directly from the team dashboard.
+- Parts can be replaced in one operation. The Parts Wizard compares an alternative against the currently fitted item and shows projected setup ratings, strain, tuning efficiency and DSQ-risk changes before fitting.
+- Each team can persist five hardware presets: **Street, Dirt, Wet, High-Speed, Custom**. Presets store parts only so loading a race setup never unexpectedly changes the pit crew.
+- Saved presets live in SQLite and are cleaned automatically when a team is deleted. Unknown/retired part keys are ignored safely when an old preset is loaded.
+- **Ask Crew Chief** gives contextual advice about build strain, tuning saturation, heat, tyre pressure, missing specialist roles, illegal hardware and where the current setup is strongest/weakest.
+- Crew roles are presented in plain language: Crew Chief (strategy), Lead Mechanic (repair/strain), Tyre Changer (tyre care), Fuel Runner (heat), Spotter (traffic/hazards).
+- Major race-event `Why` notes can name the relevant assigned specialists so crew contribution is visible without exposing raw formulas.
+- v0.4.5 does not change the race-performance model. Deterministic race results remain parity-identical to v0.4.4 for the same seeds, and the v0.4.3 Balance Lab remains the competitive-integrity gate.
+
 ## v0.4.4 race presentation & strategy
 
 - Pre-race confirmation shows track character, weather, race length and a qualitative setup card for each entrant.
@@ -105,9 +117,9 @@ python tools/balance_lab.py --quick
 - `/status` — show your current team/race dashboard.
 - `/team_wizard` — create your one linked team with a guided setup flow.
 - `/team_edit_wizard` — edit your team names, car, and stats unless the team is in an open tournament.
-- `/parts_wizard` — install and remove parts on your own rod with a visual garage sheet. Parts can still be changed during tournaments.
-- `/pit_crew_wizard` — assign pit crew members with buffs/debuffs and a visual crew sheet.
-- `/my_team` — show your garage summary, risk, reputation, next setup jobs, and quick buttons for common team tools.
+- `/parts_wizard` — compare, fit/replace, and remove parts on your own rod with a visual garage sheet. Parts can still be changed during tournaments.
+- `/pit_crew_wizard` — assign specialist crew members and see their real race roles with a visual crew sheet.
+- `/my_team` — open THE GARAGE dashboard with parts, setup ratings, saved presets, Crew Chief advice and pit-crew controls.
 - `/scrutineering` — inspect your team's illegal-part, heat, reliability, and race-readiness risks.
 - `/team_progress` — show cosmetic XP, title, traits, achievements, sponsors, and fatigue.
 - `/team_title` — choose an unlocked cosmetic title for your team.
@@ -222,4 +234,4 @@ The bot will send GIFs where available. Audio support is left as a hook: the cod
 
 ## Notes
 
-Current code version: **v0.4.4 — Race Presentation & Strategy**. The v0.4.3 competitive balance model is intentionally unchanged; v0.4.4 adds qualitative pre-race guidance, phase-aware live presentation, leaderboard snapshots, pit-cycle context and stronger final classification. Balance remains protected by the existing Balance Lab and regression tests. See `UPGRADE_v0.4.4.md` for upgrade notes.
+Current code version: **v0.4.5 — Garage, Parts & Crew Gameplay**. The v0.4.3 competitive balance model remains unchanged and v0.4.4 race presentation stays intact. v0.4.5 turns the garage into an interactive gameplay layer with one-step part replacement/comparison, five persistent setup presets, contextual Crew Chief advice and visible specialist crew roles. See `UPGRADE_v0.4.5.md` for upgrade notes.

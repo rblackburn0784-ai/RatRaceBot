@@ -1,4 +1,5 @@
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
+import json
 
 import discord
 from discord import app_commands
@@ -11,13 +12,25 @@ from models.stats import DriverStats
 from services.access import deny_admin_only, is_admin
 from services.audit import audit_log
 from services.builds import BuildService, ILLEGAL_PART_DISQUALIFICATION_RISK
-from services.balance import crew_effect_for_member
+from services.garage import (
+    SETUP_PRESETS,
+    compare_part,
+    comparison_rating_lines,
+    crew_chief_advice,
+    crew_role_summary,
+    crew_roster_lines,
+    equipped_part_rows,
+    normalized_parts,
+    saved_setup_summary,
+    setup_rating_lines,
+    stars,
+)
 from services.crew_sheet import render_crew_sheet
 from services.engagement import available_titles_for_level, level_for_xp, progress_embed, sponsor_offers_embed, track_records_embed
 from services.formatting import Embeds
 from services.garage_sheet import render_parts_sheet
 from services.scrutineering import scrutineering_embed
-from services.story import garage_summary_embed, hall_of_fame_embed, reputation_embed, rivalries_embed
+from services.story import hall_of_fame_embed, reputation_embed, rivalries_embed
 from services.team_sheet import render_team_sheet
 from services.views import ConfirmView, PaginatedTextView
 
@@ -61,6 +74,92 @@ def _crew_label(key: str) -> str:
 
 def _crew_description(key: str) -> str:
     return _shorten(CREW_MEMBERS[key].description)
+
+
+def _garage_embed(team: Team, setup_rows=()) -> discord.Embed:
+    saved = saved_setup_summary(setup_rows)
+    part_lines = []
+    for slot, key in equipped_part_rows(team):
+        label = PARTS[key].name if key in PARTS else "Empty"
+        part_lines.append(f"**{slot.value.title()}:** {label}")
+    preset_lines = [f"**{name}:** {'Saved' if name in saved else 'Empty'}" for name in SETUP_PRESETS]
+    illegal = BuildService.illegal_disqualification_risk_percent(team)
+    embed = discord.Embed(
+        title=f"🔧 THE GARAGE — {team.name}",
+        description=f"**Car:** {team.car_name} · {team.archetype.value}\n**Driver:** {team.driver_name}",
+        color=discord.Color.dark_gold(),
+    )
+    embed.add_field(
+        name="Build Condition",
+        value=(
+            f"Tuning Efficiency: **{BuildService.tuning_efficiency(team) * 100:.0f}%**\n"
+            f"Mechanical Strain: **{BuildService.build_strain(team)} — {BuildService.build_strain_label(team)}**\n"
+            f"Illegal Hardware Risk: **{illegal}%**"
+        ),
+        inline=False,
+    )
+    embed.add_field(name="Installed Hardware", value="\n".join(part_lines)[:1024], inline=True)
+    embed.add_field(name="Estimated Setup", value="\n".join(setup_rating_lines(team)), inline=True)
+    embed.add_field(name="Pit Crew", value="\n".join(crew_roster_lines(team))[:1024], inline=False)
+    embed.add_field(name="Saved Setups", value=" · ".join(preset_lines)[:1024], inline=False)
+    embed.set_footer(text="Parts are strategic trade-offs. Saved setups change hardware only; your crew stays with the team.")
+    return embed
+
+
+def _part_comparison_embed(team: Team, candidate_key: str) -> discord.Embed:
+    comparison = compare_part(team, candidate_key)
+    candidate = PARTS[candidate_key]
+    current = PARTS.get(comparison.current_key) if comparison.current_key else None
+    mods = [f"{key.replace('_', ' ').title()} {value:+d}" for key, value in candidate.modifiers.as_dict().items() if value]
+    embed = discord.Embed(
+        title=f"🔩 Part Comparison — {comparison.slot.value.title()}",
+        description=f"**{current.name if current else 'Empty slot'}** → **{candidate.name}**",
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="Candidate Trade-off", value=f"{candidate.description}\n" + (", ".join(mods) or "No raw stat change"), inline=False)
+    embed.add_field(name="Estimated Setup Change", value="\n".join(comparison_rating_lines(comparison)), inline=False)
+    embed.add_field(
+        name="Build Cost",
+        value=(
+            f"Strain: **{comparison.before_strain} → {comparison.after_strain}**\n"
+            f"Tuning: **{comparison.before_tuning}% → {comparison.after_tuning}%**\n"
+            f"DSQ risk: **{comparison.before_illegal_risk}% → {comparison.after_illegal_risk}%**"
+        ),
+        inline=False,
+    )
+    return embed
+
+
+def _crew_chief_advice_embed(team: Team) -> discord.Embed:
+    advice = crew_chief_advice(team)
+    chief_key = team.crew.get(CrewSlot.CREW_CHIEF.value)
+    chief = CREW_MEMBERS.get(chief_key)
+    chief_name = chief.name if chief else "Unassigned Pit Wall"
+    embed = discord.Embed(
+        title=f"🧢 {chief_name} — {team.name}",
+        description="Setup advice based on the car you have now. No hidden formulas—just what the crew sees in the garage.",
+        color=discord.Color.orange(),
+    )
+    embed.add_field(name="Current Read", value="\n".join(setup_rating_lines(team)), inline=False)
+    embed.add_field(name="Pit Wall Notes", value="\n".join(advice)[:1024], inline=False)
+    return embed
+
+
+def _setup_manager_embed(team: Team, setup_rows, selected: str, mode: str) -> discord.Embed:
+    saved = saved_setup_summary(setup_rows)
+    lines = []
+    for name in SETUP_PRESETS:
+        parts = saved.get(name)
+        if parts is None:
+            lines.append(f"**{name}:** Empty")
+        else:
+            lines.append(f"**{name}:** {len(parts)} part(s) saved")
+    action = "Save the car's current hardware into a preset." if mode == "save" else "Load a preset and replace the car's current hardware."
+    embed = discord.Embed(title=f"Garage Setups — {team.name}", description=action, color=discord.Color.dark_teal())
+    embed.add_field(name="Preset Bays", value="\n".join(lines), inline=False)
+    embed.add_field(name="Selected", value=f"**{selected}**", inline=True)
+    embed.add_field(name="Current Car", value=f"{len(BuildService.equipped_parts_by_slot(team))}/8 parts · {BuildService.build_strain(team)} strain", inline=True)
+    return embed
 
 
 def _ready_marker(value: object) -> str:
@@ -419,31 +518,25 @@ class PartSlotSelect(discord.ui.Select):
 class PartChoiceSelect(discord.ui.Select):
     def __init__(self, wizard: "PartsWizardView"):
         self.wizard = wizard
-        current = wizard.installed_part_key_for_slot(wizard.selected_slot)
-        if current:
-            part = PARTS[current]
-            options = [discord.SelectOption(label=_shorten(f"Installed: {_part_label(current)}"), value=current)]
+        part_keys = wizard.available_part_keys_for_slot(wizard.selected_slot)
+        if not part_keys:
+            options = [discord.SelectOption(label="No alternative parts available for this slot", value="none")]
             disabled = True
         else:
-            part_keys = wizard.available_part_keys_for_slot(wizard.selected_slot)
-            if not part_keys:
-                options = [discord.SelectOption(label="No parts available for this slot", value="none")]
-                disabled = True
-            else:
-                if wizard.selected_part_key not in part_keys:
-                    wizard.selected_part_key = part_keys[0]
-                options = [
-                    discord.SelectOption(
-                        label=_part_label(key),
-                        value=key,
-                        description=_part_description(key),
-                        default=wizard.selected_part_key == key,
-                    )
-                    for key in part_keys[:25]
-                ]
-                disabled = False
+            if wizard.selected_part_key not in part_keys:
+                wizard.selected_part_key = part_keys[0]
+            options = [
+                discord.SelectOption(
+                    label=_part_label(key),
+                    value=key,
+                    description=_part_description(key),
+                    default=wizard.selected_part_key == key,
+                )
+                for key in part_keys[:25]
+            ]
+            disabled = False
         super().__init__(
-            placeholder="Choose a part to install",
+            placeholder="Choose a part to compare / fit",
             min_values=1,
             max_values=1,
             options=options,
@@ -487,17 +580,25 @@ class PartsWizardView(discord.ui.View):
     def rebuild_items(self) -> None:
         self.clear_items()
         current = self.installed_part_key_for_slot(self.selected_slot)
-        can_install = bool(self.selected_part_key) and not current
+        can_fit = bool(self.selected_part_key) and self.selected_part_key in PARTS
         self.add_item(PartSlotSelect(self))
         self.add_item(PartChoiceSelect(self))
 
-        install_button = discord.ui.Button(label="Install Part", style=discord.ButtonStyle.success, disabled=not can_install)
+        install_button = discord.ui.Button(
+            label="Fit / Replace Part",
+            style=discord.ButtonStyle.success,
+            disabled=not can_fit,
+        )
         install_button.callback = self.install_selected_part
         self.add_item(install_button)
 
         remove_button = discord.ui.Button(label="Remove Slot Part", style=discord.ButtonStyle.danger, disabled=not current)
         remove_button.callback = self.remove_slot_part
         self.add_item(remove_button)
+
+        compare_button = discord.ui.Button(label="Compare Part", style=discord.ButtonStyle.primary, disabled=not can_fit)
+        compare_button.callback = self.compare_selected_part
+        self.add_item(compare_button)
 
         refresh_button = discord.ui.Button(label="Refresh Sheet", style=discord.ButtonStyle.secondary)
         refresh_button.callback = self.refresh_sheet
@@ -526,12 +627,12 @@ class PartsWizardView(discord.ui.View):
             mods = ", ".join(f"{key.title()} {value:+d}" for key, value in selected.modifiers.as_dict().items() if value)
             embed.add_field(name="Selected Part Effects", value=mods or "No stat modifiers", inline=False)
             if self.selected_part_key and BuildService.is_illegal_part_key(self.selected_part_key):
-                projected = min(100, current_risk + ILLEGAL_PART_DISQUALIFICATION_RISK)
+                projected = compare_part(self.team, self.selected_part_key).after_illegal_risk
                 embed.add_field(
                     name="Illegal Part Warning",
                     value=(
-                        f"This part adds +{ILLEGAL_PART_DISQUALIFICATION_RISK}% disqualification risk. "
-                        f"If installed, this team will have {projected}% risk per race. Illegal risks stack."
+                        f"Each fitted illegal part contributes +{ILLEGAL_PART_DISQUALIFICATION_RISK}% disqualification risk. "
+                        f"With this replacement fitted, the team would have {projected}% risk per race."
                     ),
                     inline=False,
                 )
@@ -571,18 +672,30 @@ class PartsWizardView(discord.ui.View):
         if self.team.id is None or not self.selected_part_key or self.selected_part_key not in PARTS:
             await interaction.response.send_message("Choose a valid part first.", ephemeral=True)
             return
-        if self.installed_part_key_for_slot(self.selected_slot):
-            await interaction.response.send_message("Remove the current part in that slot first.", ephemeral=True)
-            return
         part = PARTS[self.selected_part_key]
         if part.slot != self.selected_slot:
             await interaction.response.send_message("That part does not fit the selected slot.", ephemeral=True)
             return
-        parts = [*self.team.parts, self.selected_part_key]
+        # v0.4.5 garage gameplay: fitting an alternative replaces the current
+        # part in that slot atomically instead of forcing a remove-then-install dance.
+        parts = [
+            key for key in self.team.parts
+            if key in PARTS and PARTS[key].slot != self.selected_slot
+        ]
+        parts = normalized_parts([*parts, self.selected_part_key])
         await self.cog.bot.db.update_team_parts(self.team.id, parts)
         await self.reload_team()
         self.selected_part_key = self.first_available_part_key()
         await self.refresh(interaction)
+
+    async def compare_selected_part(self, interaction: discord.Interaction):
+        if not self.selected_part_key or self.selected_part_key not in PARTS:
+            await interaction.response.send_message("Choose a valid part first.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            embed=_part_comparison_embed(self.team, self.selected_part_key),
+            ephemeral=True,
+        )
 
     async def remove_slot_part(self, interaction: discord.Interaction):
         if self.team.id is None:
@@ -714,15 +827,9 @@ class PitCrewWizardView(discord.ui.View):
         embed.add_field(name="Assigned", value=_crew_label(current_key) if current_key else "Empty", inline=True)
         embed.add_field(name="Selected Member", value=selected.name if selected else "None", inline=True)
         if selected:
-            effects = crew_effect_for_member(selected)
-            effect_text = ", ".join(
-                f"{key.replace('_', ' ').title()} {value:+.1f}"
-                for key, value in asdict(effects).items()
-                if abs(value) >= 0.05
-            )
-            embed.add_field(name="Selected Member Specialist Effects", value=effect_text or "Situational support only", inline=False)
+            embed.add_field(name="What They Actually Do", value=crew_role_summary(selected), inline=False)
             embed.add_field(name="Crew Note", value=selected.description, inline=False)
-        embed.add_field(name="Combined Crew Specialist Effects", value=BuildService.crew_effect_summary(self.team), inline=False)
+        embed.add_field(name="Current Crew Roles", value="\n".join(crew_roster_lines(self.team))[:1024], inline=False)
         if has_sheet:
             embed.set_image(url="attachment://pit_crew_wizard.png")
         else:
@@ -780,6 +887,207 @@ class PitCrewWizardView(discord.ui.View):
     async def refresh_sheet(self, interaction: discord.Interaction):
         await self.reload_team()
         await self.refresh(interaction)
+
+
+class SetupPresetSelect(discord.ui.Select):
+    def __init__(self, manager: "SetupManagerView"):
+        self.manager = manager
+        options = [
+            discord.SelectOption(
+                label=name,
+                value=name,
+                description=("Saved setup" if name in saved_setup_summary(manager.setup_rows) else "Empty preset"),
+                default=manager.selected == name,
+            )
+            for name in SETUP_PRESETS
+        ]
+        super().__init__(placeholder="Choose a garage preset", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.manager.selected = self.values[0]
+        await self.manager.refresh(interaction)
+
+
+class SetupManagerView(discord.ui.View):
+    def __init__(self, cog: "TeamsCog", owner_id: int, team: Team, setup_rows, mode: str):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.team = team
+        self.setup_rows = list(setup_rows or [])
+        self.mode = mode if mode in {"save", "load"} else "save"
+        self.selected = SETUP_PRESETS[0]
+        self.rebuild_items()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id or is_admin(interaction):
+            return True
+        await interaction.response.send_message("This setup panel belongs to another driver.", ephemeral=True)
+        return False
+
+    def rebuild_items(self) -> None:
+        self.clear_items()
+        self.add_item(SetupPresetSelect(self))
+        save = discord.ui.Button(label="Save Current", style=discord.ButtonStyle.success, row=1)
+        save.callback = self.save_current
+        self.add_item(save)
+        saved = saved_setup_summary(self.setup_rows)
+        load = discord.ui.Button(
+            label="Load Selected",
+            style=discord.ButtonStyle.primary,
+            disabled=self.selected not in saved,
+            row=1,
+        )
+        load.callback = self.load_selected
+        self.add_item(load)
+        garage = discord.ui.Button(label="Back to Garage", style=discord.ButtonStyle.secondary, row=1)
+        garage.callback = self.back_to_garage
+        self.add_item(garage)
+
+    async def reload(self) -> None:
+        if self.team.id is None:
+            return
+        team = await self.cog.bot.db.get_team(self.team.id)
+        if team:
+            self.team = team
+        self.setup_rows = list(await self.cog.bot.db.team_setups(self.team.id))
+
+    async def refresh(self, interaction: discord.Interaction, content: str | None = None) -> None:
+        await self.reload()
+        self.rebuild_items()
+        await interaction.response.edit_message(
+            content=content,
+            embed=_setup_manager_embed(self.team, self.setup_rows, self.selected, self.mode),
+            view=self,
+        )
+
+    async def save_current(self, interaction: discord.Interaction):
+        if self.team.id is None:
+            await interaction.response.send_message("Team is missing an ID.", ephemeral=True)
+            return
+        parts = normalized_parts(self.team.parts)
+        await self.cog.bot.db.save_team_setup(self.team.id, self.selected, parts)
+        await audit_log(
+            self.cog.bot,
+            "Garage Setup Saved",
+            f"#{self.team.id} {self.team.name}: {self.selected} ({len(parts)} parts)",
+            interaction.user,
+        )
+        await self.refresh(interaction, f"✅ Saved the current hardware as **{self.selected}**.")
+
+    async def load_selected(self, interaction: discord.Interaction):
+        if self.team.id is None:
+            await interaction.response.send_message("Team is missing an ID.", ephemeral=True)
+            return
+        row = await self.cog.bot.db.team_setup(self.team.id, self.selected)
+        if not row:
+            await interaction.response.send_message("That preset is empty.", ephemeral=True)
+            return
+        try:
+            stored = json.loads(row["parts_json"])
+        except Exception:
+            await interaction.response.send_message("That preset is damaged and could not be loaded.", ephemeral=True)
+            return
+        if not isinstance(stored, list):
+            await interaction.response.send_message("That preset has invalid part data.", ephemeral=True)
+            return
+        missing = [str(key) for key in stored if str(key) not in PARTS]
+        parts = normalized_parts([str(key) for key in stored])
+        await self.cog.bot.db.update_team_parts(self.team.id, parts)
+        await audit_log(
+            self.cog.bot,
+            "Garage Setup Loaded",
+            f"#{self.team.id} {self.team.name}: {self.selected} ({len(parts)} parts)",
+            interaction.user,
+        )
+        note = f"✅ Loaded **{self.selected}** — {len(parts)} part(s) fitted."
+        if missing:
+            note += f" Ignored {len(missing)} retired/unknown part(s)."
+        await self.refresh(interaction, note)
+
+    async def back_to_garage(self, interaction: discord.Interaction):
+        await self.reload()
+        view = GarageView(self.cog, self.owner_id, self.team, self.setup_rows)
+        await interaction.response.edit_message(content=None, embed=view.embed(), view=view)
+
+
+class GarageView(discord.ui.View):
+    def __init__(self, cog: "TeamsCog", owner_id: int, team: Team, setup_rows=()):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.team = team
+        self.setup_rows = list(setup_rows or [])
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id or is_admin(interaction):
+            return True
+        await interaction.response.send_message("This garage belongs to another driver.", ephemeral=True)
+        return False
+
+    def embed(self) -> discord.Embed:
+        return _garage_embed(self.team, self.setup_rows)
+
+    async def _reload(self) -> None:
+        if self.team.id is None:
+            return
+        team = await self.cog.bot.db.get_team(self.team.id)
+        if team:
+            self.team = team
+        self.setup_rows = list(await self.cog.bot.db.team_setups(self.team.id))
+
+    async def _open_parts(self, interaction: discord.Interaction, instruction: str) -> None:
+        await self._reload()
+        view = PartsWizardView(self.cog, self.owner_id, self.team)
+        file = view.garage_file()
+        if file:
+            await interaction.response.send_message(content=instruction, embed=view.embed(True), file=file, view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(content=instruction, embed=view.embed(False), view=view, ephemeral=True)
+
+    @discord.ui.button(label="Fit Part", style=discord.ButtonStyle.success, row=0)
+    async def fit_part(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._open_parts(interaction, "Choose a slot and alternative part, then use **Fit / Replace Part**.")
+
+    @discord.ui.button(label="Remove Part", style=discord.ButtonStyle.danger, row=0)
+    async def remove_part(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._open_parts(interaction, "Choose the fitted slot you want to strip, then use **Remove Slot Part**.")
+
+    @discord.ui.button(label="Compare Part", style=discord.ButtonStyle.primary, row=0)
+    async def compare_part_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._open_parts(interaction, "Choose an alternative and use **Compare Part** before fitting it.")
+
+    @discord.ui.button(label="Save Setup", style=discord.ButtonStyle.secondary, row=0)
+    async def save_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._reload()
+        view = SetupManagerView(self.cog, self.owner_id, self.team, self.setup_rows, "save")
+        await interaction.response.send_message(embed=_setup_manager_embed(self.team, self.setup_rows, view.selected, "save"), view=view, ephemeral=True)
+
+    @discord.ui.button(label="Load Setup", style=discord.ButtonStyle.secondary, row=0)
+    async def load_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._reload()
+        view = SetupManagerView(self.cog, self.owner_id, self.team, self.setup_rows, "load")
+        await interaction.response.send_message(embed=_setup_manager_embed(self.team, self.setup_rows, view.selected, "load"), view=view, ephemeral=True)
+
+    @discord.ui.button(label="Ask Crew Chief", style=discord.ButtonStyle.primary, row=1)
+    async def ask_crew_chief(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._reload()
+        await interaction.response.send_message(embed=_crew_chief_advice_embed(self.team), ephemeral=True)
+
+    @discord.ui.button(label="Pit Crew", style=discord.ButtonStyle.primary, row=1)
+    async def pit_crew(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._reload()
+        view = PitCrewWizardView(self.cog, self.owner_id, self.team)
+        file = view.crew_file()
+        if file:
+            await interaction.response.send_message(embed=view.embed(True), file=file, view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=view.embed(False), view=view, ephemeral=True)
+
+    @discord.ui.button(label="Refresh Garage", style=discord.ButtonStyle.secondary, row=1)
+    async def refresh_garage(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._reload()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
 
 
 class MyTeamActionsView(discord.ui.View):
@@ -1214,12 +1522,11 @@ class TeamsCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         if is_admin(interaction) and team_id is None:
             async def show_selected(select_interaction: discord.Interaction, selected_team: Team):
-                profile = await self.bot.db.team_profile(selected_team.id)
-                rivalries = await self.bot.db.team_rivalries(selected_team.id, limit=1)
-                in_open_tournament = await self.bot.db.team_in_open_tournament(selected_team.id)
+                setup_rows = await self.bot.db.team_setups(selected_team.id)
+                view = GarageView(self, select_interaction.user.id, selected_team, setup_rows)
                 await select_interaction.response.send_message(
-                    embed=garage_summary_embed(selected_team, profile, rivalries, in_open_tournament),
-                    view=MyTeamActionsView(self, select_interaction.user.id, selected_team),
+                    embed=view.embed(),
+                    view=view,
                     ephemeral=True,
                 )
 
@@ -1229,12 +1536,11 @@ class TeamsCog(commands.Cog):
         if not team or team.id is None:
             return
 
-        profile = await self.bot.db.team_profile(team.id)
-        rivalries = await self.bot.db.team_rivalries(team.id, limit=1)
-        in_open_tournament = await self.bot.db.team_in_open_tournament(team.id)
+        setup_rows = await self.bot.db.team_setups(team.id)
+        view = GarageView(self, interaction.user.id, team, setup_rows)
         await interaction.followup.send(
-            embed=garage_summary_embed(team, profile, rivalries, in_open_tournament),
-            view=MyTeamActionsView(self, interaction.user.id, team),
+            embed=view.embed(),
+            view=view,
             ephemeral=True,
         )
 

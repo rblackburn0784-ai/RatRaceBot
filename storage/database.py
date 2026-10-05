@@ -166,6 +166,14 @@ CREATE TABLE IF NOT EXISTS track_records (
     PRIMARY KEY (track_key, record_key)
 );
 
+CREATE TABLE IF NOT EXISTS team_setups (
+    team_id INTEGER NOT NULL,
+    setup_name TEXT NOT NULL,
+    parts_json TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (team_id, setup_name)
+);
+
 CREATE TABLE IF NOT EXISTS race_processing (
     race_id INTEGER PRIMARY KEY,
     processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -512,6 +520,7 @@ class Database:
                 conn.execute("DELETE FROM team_achievements WHERE team_id=?", (team_id,))
                 conn.execute("DELETE FROM sponsor_offers WHERE team_id=?", (team_id,))
                 conn.execute("DELETE FROM team_fatigue WHERE team_id=?", (team_id,))
+                conn.execute("DELETE FROM team_setups WHERE team_id=?", (team_id,))
                 conn.execute(
                     "DELETE FROM team_rivalries WHERE team_a_id=? OR team_b_id=?",
                     (team_id, team_id),
@@ -529,6 +538,30 @@ class Database:
 
     async def update_team_crew(self, team_id: int, crew: dict[str, str]) -> None:
         await self.execute("UPDATE teams SET crew_json=? WHERE id=?", (json.dumps(crew), team_id))
+
+    async def team_setups(self, team_id: int):
+        return await self.fetchall(
+            "SELECT team_id, setup_name, parts_json, updated_at FROM team_setups WHERE team_id=? ORDER BY setup_name",
+            (team_id,),
+        )
+
+    async def team_setup(self, team_id: int, setup_name: str):
+        return await self.fetchone(
+            "SELECT team_id, setup_name, parts_json, updated_at FROM team_setups WHERE team_id=? AND setup_name=?",
+            (team_id, setup_name),
+        )
+
+    async def save_team_setup(self, team_id: int, setup_name: str, parts: list[str]) -> None:
+        await self.execute(
+            """
+            INSERT INTO team_setups(team_id, setup_name, parts_json, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(team_id, setup_name) DO UPDATE SET
+                parts_json=excluded.parts_json,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (team_id, setup_name, json.dumps(parts)),
+        )
 
     async def create_tournament(self, name: str) -> int:
         cur = await self.execute("INSERT INTO tournaments(name) VALUES (?)", (name,))

@@ -448,20 +448,20 @@ class MenuCog(commands.Cog):
     async def version(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="Rat Rod Racing Bot",
-            description=f"Version {BOT_VERSION} - race presentation & strategy",
+            description=f"Version {BOT_VERSION} - garage, parts & crew gameplay",
             color=discord.Color.dark_gold(),
         )
         embed.add_field(
             name="Recent Changes",
             value=(
-                "Qualitative pre-race setup cards show track fit without exposing raw formulas\n"
-                "Race phases: Start, Opening, Mid-Race, Pit Window, Closing and Final Lap\n"
-                "Live leaderboards show estimated gaps plus damage, tyres and strain\n"
-                "Pit stops report service quality, approximate time cost and position swing\n"
-                "Contextual Why notes explain which race factors shaped major events\n"
-                "Final classification clearly separates finishers, DNFs and DSQs\n"
-                "Fastest lap and new track-record callouts are always surfaced\n"
-                "v0.4.3 competitive balance remains unchanged and Balance Lab protected"
+                "THE GARAGE dashboard shows all eight part slots, strain, tuning and four setup ratings\n"
+                "Parts can be compared and replaced in one step instead of remove-then-fit\n"
+                "Five persistent setup presets: Street, Dirt, Wet, High-Speed and Custom\n"
+                "Saved setups change hardware only; your standing pit crew stays assigned\n"
+                "Ask Crew Chief gives contextual setup, strain, heat, tyre and illegal-hardware advice\n"
+                "Crew roles are explained in plain language and surfaced in race-event Why notes\n"
+                "Lead Mechanic, Tyre Changer, Fuel Runner, Spotter and Crew Chief retain specialist mechanics\n"
+                "v0.4.3 competitive balance and v0.4.4 race presentation remain protected"
             ),
             inline=False,
         )
