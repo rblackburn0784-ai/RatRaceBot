@@ -4,8 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - '.rr-update/**'
-      - '.github/workflows/apply-v046.yml'
+      - '.rr-update/READY-v046'
 
 permissions:
   contents: write
@@ -26,7 +25,11 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           import base64, hashlib, lzma
-          encoded = Path('.rr-update/v046.patch.xz.b64').read_text(encoding='utf-8')
+          parts = [Path(f'.rr-update/part-{i:02d}') for i in range(7)]
+          missing = [str(p) for p in parts if not p.exists()]
+          if missing:
+              raise SystemExit(f'Missing patch parts: {missing}')
+          encoded = ''.join(p.read_text(encoding='utf-8') for p in parts)
           payload = base64.b64decode(encoded, validate=True)
           expected = '9b45a5d95eb371ad798453ceea5ce9ce446530c8e6706e1f8fd5161acfb2093b'
           actual = hashlib.sha256(payload).hexdigest()
