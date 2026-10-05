@@ -1,0 +1,76 @@
+name: Apply Rat Rod Racing Bot v0.4.4
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.rr-update/**'
+
+permissions:
+  contents: write
+
+jobs:
+  apply-update:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct and apply v0.4.4 patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import base64, hashlib, lzma
+          path = Path('.rr-update/chunk-000.b64')
+          if not path.exists():
+              raise SystemExit(f'Missing patch chunk: {path}')
+          encoded = path.read_text(encoding='utf-8')
+          payload = base64.b64decode(encoded, validate=True)
+          expected = '371a8fce6559b0dc0f7d411089758d15785fc37cabe11f60fcf6d3e4d122041c'
+          actual = hashlib.sha256(payload).hexdigest()
+          if actual != expected:
+              raise SystemExit(f'Compressed patch checksum mismatch: {actual}')
+          raw = lzma.decompress(payload)
+          raw_expected = 'f5fe1028597e73917c5d62fdc84fa49772699fe4ab2e6008561e8c0f52abc594'
+          raw_actual = hashlib.sha256(raw).hexdigest()
+          if raw_actual != raw_expected:
+              raise SystemExit(f'Raw patch checksum mismatch: {raw_actual}')
+          Path('/tmp/v044.patch').write_bytes(raw)
+          PY
+          git apply --check /tmp/v044.patch
+          git apply /tmp/v044.patch
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Verify v0.4.4
+        run: |
+          python -m compileall -q main.py config.py cogs services storage models data tools
+          python -m pytest -q
+          python tools/balance_lab.py --quick
+          python - <<'PY'
+          import config
+          assert config.BOT_VERSION == '0.4.4', config.BOT_VERSION
+          print('Version check:', config.BOT_VERSION)
+          PY
+
+      - name: Commit clean v0.4.4 source
+        shell: bash
+        run: |
+          rm -rf .rr-update
+          rm -f .github/workflows/apply-v044.yml
+          rmdir .github/workflows 2>/dev/null || true
+          rmdir .github 2>/dev/null || true
+          rm -rf .pytest_cache
+          find . -type d -name '__pycache__' -prune -exec rm -rf {} +
+          find . -type f -name '*.pyc' -delete
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Rat Rod Racing Bot v0.4.4 - Race Presentation & Strategy'
+          git push origin main
