@@ -1,4 +1,5 @@
-Rat Rod Racing Bot v0.4.9 — Polish, Administration & Release Candidate
+Rat Rod Racing Bot v0.5 — Blacktop Racing World
 Release date: 2026-10-06
 
-This is the v0.5 release candidate. See UPGRADE_v0.4.9.md before replacing an existing installation.
+Persistent racing-world release. Progression expands choices, identity and strategy without granting automatic victory.
+See UPGRADE_v0.5.md before replacing an existing installation.
