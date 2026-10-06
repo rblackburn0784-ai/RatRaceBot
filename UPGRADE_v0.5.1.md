@@ -13,7 +13,7 @@
 
 v0.5.1 refuses to create a new championship while another is open.
 
-If an older database already contains multiple open tournaments, the bot does not silently choose which one to close. `/validate_database` reports the inconsistency so an admin can decide which championship should remain active.
+If an older database already contains multiple open tournaments, the bot does not silently choose which one to close. `/validate_database` reports the inconsistency so an admin can decide which championship should remain active. An empty/partial duplicate with no scoring races can be cancelled safely with `/tournament_close`; it will be marked cancelled without creating Season History.
 
 ## Tournament Wizard
 
