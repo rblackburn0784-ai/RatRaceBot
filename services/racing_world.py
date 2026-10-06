@@ -138,6 +138,8 @@ async def ensure_world_schema(db) -> None:
     async with db.lock:
         conn = db._require()
         conn.executescript(WORLD_SCHEMA)
+        # Grandfather existing rivalry history but normalise the new public 0-100 scale.
+        conn.execute("UPDATE team_rivalries SET heat=MIN(100, MAX(0, heat))")
         conn.commit()
 
 
