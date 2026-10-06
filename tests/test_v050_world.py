@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from cogs.menu import MainMenuView, WorldHubView
+from cogs.world import WorldEventDecisionView
 from data.defaults import CREW_MEMBERS, PARTS
 from models.domain import Team
 from models.enums import CarArchetype, CrewSlot, PartSlot
@@ -235,6 +236,16 @@ class WorldUiSafetyTests(unittest.IsolatedAsyncioTestCase):
         view = OneShotReliableView(timeout=30)
         self.assertTrue(view.begin_once())
         self.assertFalse(view.begin_once())
+
+
+    async def test_world_event_buttons_can_be_disabled_after_resolution(self):
+        class DummyCog:
+            pass
+
+        view = WorldEventDecisionView(DummyCog(), 123, 1, 1)
+        view._disable()
+        self.assertTrue(view.children)
+        self.assertTrue(all(item.disabled for item in view.children))
 
 
     async def test_safe_reply_acknowledges_initial_and_already_responded_interactions(self):
