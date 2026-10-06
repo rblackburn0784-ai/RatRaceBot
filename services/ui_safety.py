@@ -35,11 +35,11 @@ class ReliableView(discord.ui.View):
         error: Exception,
         item: discord.ui.Item,
     ) -> None:
-        LOGGER.exception(
+        LOGGER.error(
             "UI callback failed in %s for item %s",
             self.__class__.__name__,
             getattr(item, "custom_id", None) or getattr(item, "label", None) or item.__class__.__name__,
-            exc_info=error,
+            exc_info=(type(error), error, error.__traceback__),
         )
         await safe_reply(
             interaction,
