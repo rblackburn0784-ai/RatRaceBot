@@ -10,6 +10,7 @@ from config import Settings
 from storage.database import Database
 from services.race_activity import RaceActivityRegistry
 from services.recovery import RecoveryManager
+from services.ui_safety import safe_reply
 
 COGS = [
     "cogs.admin",
@@ -31,6 +32,7 @@ class RatRodBot(commands.Bot):
         self.race_activity = RaceActivityRegistry()
         self.recovery_lock = asyncio.Lock()
         self.recovery = RecoveryManager(self.db, settings.database_path)
+        self.tree.on_error = self.on_app_command_error
 
     async def setup_hook(self) -> None:
         await self.db.init()
@@ -45,6 +47,18 @@ class RatRodBot(commands.Bot):
         else:
             await self.tree.sync()
             logging.info("Synced global commands")
+
+    async def on_app_command_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        logging.error(
+            "Slash command failed: %s",
+            getattr(interaction.command, "qualified_name", "unknown"),
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        await safe_reply(
+            interaction,
+            "That command could not be completed. Nothing else was changed. Reopen `/menu` or `/world` and try again.",
+            ephemeral=True,
+        )
 
     async def close(self) -> None:
         await self.db.close()

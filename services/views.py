@@ -2,8 +2,10 @@ from collections.abc import Awaitable, Callable
 
 import discord
 
+from services.ui_safety import OneShotReliableView, ReliableView, safe_reply
 
-class PaginatedTextView(discord.ui.View):
+
+class PaginatedTextView(ReliableView):
     def __init__(self, owner_id: int, title: str, lines: list[str], *, per_page: int = 10):
         super().__init__(timeout=300)
         self.owner_id = owner_id
@@ -47,7 +49,7 @@ class PaginatedTextView(discord.ui.View):
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
 
-class ConfirmView(discord.ui.View):
+class ConfirmView(OneShotReliableView):
     def __init__(
         self,
         owner_id: int,
@@ -74,10 +76,17 @@ class ConfirmView(discord.ui.View):
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.begin_once():
+            await safe_reply(interaction, "That confirmation has already been used. No second action was taken.")
+            return
         self._disable()
         await self.on_confirm(interaction)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self._action_started:
+            await safe_reply(interaction, "That confirmation has already been used.")
+            return
+        self._action_started = True
         self._disable()
         await interaction.response.edit_message(content="Cancelled.", embed=None, view=self)

@@ -5,6 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from services.access import is_admin
+from services.ui_safety import OneShotReliableView, safe_reply
 from services.racing_world import (
     ensure_world_schema,
     heat_bar,
@@ -12,6 +13,56 @@ from services.racing_world import (
     resolve_world_event,
     world_event_embed,
 )
+
+
+class WorldEventDecisionView(OneShotReliableView):
+    def __init__(self, cog: "RacingWorldCog", owner_id: int, team_id: int, event_id: int):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.team_id = int(team_id)
+        self.event_id = int(event_id)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message("This story decision belongs to another driver.", ephemeral=True)
+        return False
+
+    async def choose(self, interaction: discord.Interaction, choice: str) -> None:
+        await ensure_world_schema(self.cog.bot.db)
+        row = await self.cog.bot.db.fetchone("SELECT * FROM world_events WHERE id=?", (self.event_id,))
+        if not row:
+            await safe_reply(interaction, "That world event no longer exists. Refresh the World Hub.")
+            return
+        if int(row["team_id"]) != self.team_id:
+            await safe_reply(interaction, "That world event no longer belongs to this team.")
+            return
+        if str(row["status"]) != "pending":
+            self._disable()
+            await safe_reply(
+                interaction,
+                f"That decision was already resolved as **{row['choice'] or '?'}**. No second choice was applied.",
+            )
+            return
+        if not self.begin_once():
+            await safe_reply(interaction, "That decision is already being processed. No second choice was applied.")
+            return
+
+        event = await resolve_world_event(self.cog.bot.db, self.event_id, choice)
+        self._disable()
+        if not event:
+            await safe_reply(interaction, "That world event disappeared before it could be resolved.")
+            return
+        await interaction.response.edit_message(embed=world_event_embed(event), view=self)
+
+    @discord.ui.button(label="Choose A", style=discord.ButtonStyle.primary)
+    async def choose_a(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.choose(interaction, "A")
+
+    @discord.ui.button(label="Choose B", style=discord.ButtonStyle.primary)
+    async def choose_b(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.choose(interaction, "B")
 
 
 class RacingWorldCog(commands.Cog):
@@ -25,6 +76,24 @@ class RacingWorldCog(commands.Cog):
             return await self.bot.db.get_team(int(team_id))
         return await self.bot.db.get_team_by_owner(interaction.user.id)
 
+    async def send_world_events(self, interaction: discord.Interaction, team) -> None:
+        rows = await pending_world_events(self.bot.db, int(team.id))
+        if not rows:
+            await interaction.response.send_message(
+                f"**{team.name}** has no pending world-event decisions.",
+                ephemeral=True,
+            )
+            return
+        row = dict(rows[0])
+        embed = world_event_embed(row)
+        embed.title = f"🌎 Blacktop World — {row['title']}"
+        embed.set_footer(text=f"World Event #{row['id']} · {len(rows)} pending · choices are story decisions, not random stat punishment")
+        await interaction.response.send_message(
+            embed=embed,
+            view=WorldEventDecisionView(self, interaction.user.id, int(team.id), int(row["id"])),
+            ephemeral=True,
+        )
+
     @app_commands.command(name="world_events", description="Show pending racing-world decisions for your team.")
     async def world_events(self, interaction: discord.Interaction, team_id: int | None = None):
         team = await self._team_for_user(interaction, team_id)
@@ -34,31 +103,7 @@ class RacingWorldCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        rows = await pending_world_events(self.bot.db, int(team.id))
-        if not rows:
-            await interaction.response.send_message(
-                f"**{team.name}** has no pending world-event decisions.",
-                ephemeral=True,
-            )
-            return
-
-        embed = discord.Embed(
-            title=f"Blacktop World — {team.name}",
-            description="These events are story choices, not random stat punishment.",
-            color=discord.Color.orange(),
-        )
-        for row in rows[:5]:
-            embed.add_field(
-                name=f"#{row['id']} — {row['title']}",
-                value=(
-                    f"{row['prompt']}\n"
-                    f"**A:** {row['option_a']}\n"
-                    f"**B:** {row['option_b']}"
-                )[:1024],
-                inline=False,
-            )
-        embed.set_footer(text="Resolve one with /world_event_choose event_id:<id> choice:A or B")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await self.send_world_events(interaction, team)
 
     @app_commands.command(name="world_event_choose", description="Resolve one of your pending racing-world decisions.")
     @app_commands.choices(
@@ -85,11 +130,17 @@ class RacingWorldCog(commands.Cog):
                 await interaction.response.send_message("That world event belongs to another team.", ephemeral=True)
                 return
 
+        if str(row["status"]) != "pending":
+            await interaction.response.send_message(
+                f"That world event was already resolved as **{row['choice'] or '?'}**. No second choice was applied.",
+                ephemeral=True,
+            )
+            return
         event = await resolve_world_event(self.bot.db, int(event_id), choice.value)
         if not event:
             await interaction.response.send_message("World event not found.", ephemeral=True)
             return
-        await interaction.response.send_message(embed=world_event_embed(event), ephemeral=False)
+        await interaction.response.send_message(embed=world_event_embed(event), ephemeral=True)
 
     @app_commands.command(name="rivalry_story", description="Show a team's richer v0.4.8 rivalry history.")
     async def rivalry_story(self, interaction: discord.Interaction, team_id: int | None = None):

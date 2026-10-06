@@ -124,6 +124,21 @@ CREATE TABLE IF NOT EXISTS season_history (
     completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS team_season_history (
+    team_id INTEGER NOT NULL,
+    tournament_id INTEGER NOT NULL,
+    season_name TEXT NOT NULL,
+    final_position INTEGER NOT NULL,
+    points INTEGER NOT NULL DEFAULT 0,
+    wins INTEGER NOT NULL DEFAULT 0,
+    podiums INTEGER NOT NULL DEFAULT 0,
+    fastest_laps INTEGER NOT NULL DEFAULT 0,
+    awards_json TEXT NOT NULL DEFAULT '[]',
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (team_id, tournament_id)
+);
+
 CREATE TABLE IF NOT EXISTS team_progress (
     team_id INTEGER PRIMARY KEY,
     xp INTEGER NOT NULL DEFAULT 0,
@@ -376,6 +391,71 @@ class Database:
             conn.execute("ALTER TABLE season_history ADD COLUMN awards_json TEXT NOT NULL DEFAULT '[]'")
         if "summary_json" not in season_columns:
             conn.execute("ALTER TABLE season_history ADD COLUMN summary_json TEXT NOT NULL DEFAULT '{}'")
+
+        # v0.5: preserve every completed pre-v0.5 season as permanent per-team
+        # history. This is idempotent and intentionally uses the frozen season
+        # snapshot rather than today's mutable team profile.
+        def legacy_int(value, default: int = 0) -> int:
+            try:
+                return int(value if value is not None else default)
+            except (TypeError, ValueError):
+                return default
+
+        legacy_seasons = conn.execute(
+            """
+            SELECT tournament_id, tournament_name, standings_json, awards_json,
+                   summary_json, completed_at
+            FROM season_history
+            ORDER BY tournament_id
+            """
+        ).fetchall()
+        for season in legacy_seasons:
+            try:
+                standings = json.loads(season["standings_json"] or "[]")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                standings = []
+            try:
+                awards = json.loads(season["awards_json"] or "[]")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                awards = []
+            if not isinstance(standings, list):
+                continue
+            for final_position, standing in enumerate(standings, start=1):
+                if not isinstance(standing, dict):
+                    continue
+                team_id = legacy_int(standing.get("team_id"))
+                if team_id <= 0:
+                    continue
+                team_awards = []
+                if isinstance(awards, list):
+                    for award in awards:
+                        if not isinstance(award, dict):
+                            continue
+                        if legacy_int(award.get("team_id")) == team_id:
+                            team_awards.append(award)
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO team_season_history(
+                        team_id, tournament_id, season_name, final_position,
+                        points, wins, podiums, fastest_laps, awards_json,
+                        summary_json, completed_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        team_id,
+                        legacy_int(season["tournament_id"]),
+                        str(season["tournament_name"]),
+                        final_position,
+                        legacy_int(standing.get("points")),
+                        legacy_int(standing.get("wins")),
+                        legacy_int(standing.get("podiums")),
+                        legacy_int(standing.get("fastest_laps")),
+                        json.dumps(team_awards),
+                        str(season["summary_json"] or "{}"),
+                        str(season["completed_at"]),
+                    ),
+                )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS team_progress (
@@ -1474,6 +1554,45 @@ class Database:
                         json.dumps(summary),
                     ),
                 )
+                for final_position, standing in enumerate(standings, start=1):
+                    team_id = int(standing["team_id"])
+                    team_awards = [
+                        award for award in awards
+                        if int(award.get("team_id") or 0) == team_id
+                    ]
+                    conn.execute(
+                        """
+                        INSERT INTO team_season_history(
+                            team_id, tournament_id, season_name, final_position,
+                            points, wins, podiums, fastest_laps, awards_json,
+                            summary_json, completed_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(team_id, tournament_id) DO UPDATE SET
+                            season_name=excluded.season_name,
+                            final_position=excluded.final_position,
+                            points=excluded.points,
+                            wins=excluded.wins,
+                            podiums=excluded.podiums,
+                            fastest_laps=excluded.fastest_laps,
+                            awards_json=excluded.awards_json,
+                            summary_json=excluded.summary_json,
+                            completed_at=CURRENT_TIMESTAMP
+                        """,
+                        (
+                            team_id,
+                            tournament_id,
+                            tournament["name"],
+                            final_position,
+                            int(standing["points"]),
+                            int(standing["wins"]),
+                            int(standing["podiums"]),
+                            int(standing["fastest_laps"]),
+                            json.dumps(team_awards),
+                            json.dumps(summary),
+                        ),
+                    )
+
                 conn.execute("UPDATE tournaments SET status='closed' WHERE id=?", (tournament_id,))
                 conn.commit()
                 return rows
@@ -1560,6 +1679,44 @@ class Database:
 
     async def season_history_entry(self, tournament_id: int) -> sqlite3.Row | None:
         return await self.fetchone("SELECT * FROM season_history WHERE tournament_id=?", (tournament_id,))
+
+    async def team_season_history(self, team_id: int, limit: int = 20) -> list[sqlite3.Row]:
+        return await self.fetchall(
+            """
+            SELECT *
+            FROM team_season_history
+            WHERE team_id=?
+            ORDER BY completed_at DESC, tournament_id DESC
+            LIMIT ?
+            """,
+            (int(team_id), int(limit)),
+        )
+
+    async def team_career_summary(self, team_id: int) -> dict[str, int]:
+        row = await self.fetchone(
+            """
+            SELECT
+                COUNT(*) AS seasons,
+                SUM(CASE WHEN final_position=1 THEN 1 ELSE 0 END) AS titles,
+                SUM(CASE WHEN final_position<=3 THEN 1 ELSE 0 END) AS season_podiums,
+                COALESCE(SUM(points), 0) AS championship_points,
+                COALESCE(SUM(wins), 0) AS championship_wins,
+                COALESCE(SUM(podiums), 0) AS championship_podiums,
+                COALESCE(SUM(fastest_laps), 0) AS fastest_laps
+            FROM team_season_history
+            WHERE team_id=?
+            """,
+            (int(team_id),),
+        )
+        return {
+            "seasons": int(row["seasons"] or 0) if row else 0,
+            "titles": int(row["titles"] or 0) if row else 0,
+            "season_podiums": int(row["season_podiums"] or 0) if row else 0,
+            "championship_points": int(row["championship_points"] or 0) if row else 0,
+            "championship_wins": int(row["championship_wins"] or 0) if row else 0,
+            "championship_podiums": int(row["championship_podiums"] or 0) if row else 0,
+            "fastest_laps": int(row["fastest_laps"] or 0) if row else 0,
+        }
 
     async def hall_of_fame_champions(self, limit: int = 5) -> list[sqlite3.Row]:
         return await self.fetchall(

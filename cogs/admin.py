@@ -30,6 +30,7 @@ from services.streamer import RaceStreamer
 from services.team_ids import parse_team_ids_csv
 from services.team_sheet import render_team_sheet
 from services.views import ConfirmView, PaginatedTextView
+from services.ui_safety import ReliableModal, ReliableView
 
 ADMIN_BACKGROUND = ADMIN_PANEL_BACKGROUND
 
@@ -96,7 +97,7 @@ class AdminActionButton(discord.ui.Button):
         await view.handle_action(interaction, self.key)
 
 
-class TournamentNameModal(discord.ui.Modal):
+class TournamentNameModal(ReliableModal):
     def __init__(self, view: "AdminPanelView"):
         super().__init__(title="Create Tournament")
         self.view_ref = view
@@ -120,7 +121,7 @@ class TournamentNameModal(discord.ui.Modal):
         await audit_log(self.view_ref.cog.bot, "Tournament Created", f"#{tournament_id} {name}", interaction.user)
 
 
-class RangeModal(discord.ui.Modal):
+class RangeModal(ReliableModal):
     def __init__(self, view: "AdminPanelView"):
         super().__init__(title="Personalize Saved AI")
         self.view_ref = view
@@ -139,7 +140,7 @@ class RangeModal(discord.ui.Modal):
         await self.view_ref.personalize_ai_range(interaction, start_id, end_id)
 
 
-class RaceReplayModal(discord.ui.Modal):
+class RaceReplayModal(ReliableModal):
     def __init__(self, view: "AdminPanelView"):
         super().__init__(title="Replay Race")
         self.view_ref = view
@@ -177,7 +178,7 @@ class TeamSelect(discord.ui.Select):
         await self.parent.on_team(interaction, team)
 
 
-class TeamSelectView(discord.ui.View):
+class TeamSelectView(ReliableView):
     def __init__(self, cog: "AdminCog", owner_id: int, teams, on_team, placeholder: str = "Choose a team"):
         super().__init__(timeout=180)
         self.cog = cog
@@ -215,7 +216,7 @@ class TeamMultiSelect(discord.ui.Select):
         await self.parent.on_team_ids(interaction, [int(value) for value in self.values])
 
 
-class TeamMultiSelectView(discord.ui.View):
+class TeamMultiSelectView(ReliableView):
     def __init__(self, cog: "AdminCog", owner_id: int, teams, on_team_ids):
         super().__init__(timeout=180)
         self.cog = cog
@@ -243,7 +244,7 @@ class PartSelect(discord.ui.Select):
         await self.parent.on_part(interaction, self.values[0])
 
 
-class PartSelectView(discord.ui.View):
+class PartSelectView(ReliableView):
     def __init__(self, owner_id: int, team, options_data: list[tuple[str, str, str]], on_part, placeholder: str):
         super().__init__(timeout=180)
         self.owner_id = owner_id
@@ -279,7 +280,7 @@ class TournamentSelect(discord.ui.Select):
         await self.parent.on_tournament(interaction, tournament)
 
 
-class TournamentSelectView(discord.ui.View):
+class TournamentSelectView(ReliableView):
     def __init__(self, cog: "AdminCog", owner_id: int, tournaments, on_tournament, placeholder: str):
         super().__init__(timeout=180)
         self.cog = cog
@@ -307,7 +308,7 @@ class TrackSelect(discord.ui.Select):
         await self.parent.on_track(interaction, self.values[0])
 
 
-class TrackSelectView(discord.ui.View):
+class TrackSelectView(ReliableView):
     def __init__(self, cog: "AdminCog", owner_id: int, on_track, placeholder: str = "Choose a track"):
         super().__init__(timeout=180)
         self.cog = cog
@@ -322,7 +323,7 @@ class TrackSelectView(discord.ui.View):
         return False
 
 
-class AdminPanelView(discord.ui.View):
+class AdminPanelView(ReliableView):
     def __init__(self, cog: "AdminCog", owner_id: int):
         super().__init__(timeout=600)
         self.cog = cog

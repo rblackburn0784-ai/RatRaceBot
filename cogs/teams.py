@@ -35,6 +35,7 @@ from services.scrutineering import scrutineering_embed
 from services.story import hall_of_fame_embed, reputation_embed, rivalries_embed
 from services.team_sheet import render_team_sheet
 from services.views import ConfirmView, PaginatedTextView
+from services.ui_safety import ReliableModal, ReliableView
 
 
 STAT_CHOICES = [app_commands.Choice(name=str(i), value=i) for i in range(1, 9)]
@@ -264,7 +265,7 @@ class CarTypeSelect(discord.ui.Select):
         await self.wizard.refresh(interaction)
 
 
-class TeamDetailsModal(discord.ui.Modal):
+class TeamDetailsModal(ReliableModal):
     def __init__(self, wizard: "TeamWizardView"):
         super().__init__(title="Team Details")
         self.wizard = wizard
@@ -308,7 +309,7 @@ class TeamDetailsModal(discord.ui.Modal):
         await self.wizard.refresh(interaction)
 
 
-class DriverStatsModal(discord.ui.Modal):
+class DriverStatsModal(ReliableModal):
     def __init__(self, wizard: "TeamWizardView"):
         super().__init__(title="Driver Stats")
         self.wizard = wizard
@@ -340,7 +341,7 @@ class DriverStatsModal(discord.ui.Modal):
         await self.wizard.refresh(interaction)
 
 
-class TeamWizardView(discord.ui.View):
+class TeamWizardView(ReliableView):
     def __init__(self, cog: "TeamsCog", owner_id: int):
         super().__init__(timeout=600)
         self.cog = cog
@@ -416,13 +417,13 @@ class TeamWizardView(discord.ui.View):
         for item in self.children:
             item.disabled = True
         await interaction.response.edit_message(
-            content=f"Created team **{team.name}** as ID `{team_id}`.",
+            content=f"Created team **{team.name}** as ID `{team_id}`. Next: open `/world` to enter the Blacktop Racing World.",
             embed=Embeds.team_sheet(team),
             view=self,
         )
 
 
-class EditTeamWizardView(discord.ui.View):
+class EditTeamWizardView(ReliableView):
     def __init__(self, cog: "TeamsCog", owner_id: int, team: Team):
         super().__init__(timeout=600)
         self.cog = cog
@@ -571,7 +572,7 @@ class PartChoiceSelect(discord.ui.Select):
         await self.wizard.refresh(interaction)
 
 
-class PartsWizardView(discord.ui.View):
+class PartsWizardView(ReliableView):
     def __init__(self, cog: "TeamsCog", owner_id: int, team: Team):
         super().__init__(timeout=600)
         self.cog = cog
@@ -791,7 +792,7 @@ class CrewMemberSelect(discord.ui.Select):
         await self.wizard.refresh(interaction)
 
 
-class PitCrewWizardView(discord.ui.View):
+class PitCrewWizardView(ReliableView):
     def __init__(self, cog: "TeamsCog", owner_id: int, team: Team, level: int = 1):
         super().__init__(timeout=600)
         self.cog = cog
@@ -945,7 +946,7 @@ class SetupPresetSelect(discord.ui.Select):
         await self.manager.refresh(interaction)
 
 
-class SetupManagerView(discord.ui.View):
+class SetupManagerView(ReliableView):
     def __init__(self, cog: "TeamsCog", owner_id: int, team: Team, setup_rows, mode: str, level: int = 1):
         super().__init__(timeout=300)
         self.cog = cog
@@ -1058,7 +1059,7 @@ class SetupManagerView(discord.ui.View):
         await interaction.response.edit_message(content=None, embed=view.embed(), view=view)
 
 
-class GarageView(discord.ui.View):
+class GarageView(ReliableView):
     def __init__(self, cog: "TeamsCog", owner_id: int, team: Team, setup_rows=(), level: int = 1):
         super().__init__(timeout=600)
         self.cog = cog
@@ -1140,7 +1141,7 @@ class GarageView(discord.ui.View):
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
 
-class MyTeamActionsView(discord.ui.View):
+class MyTeamActionsView(ReliableView):
     def __init__(self, cog: "TeamsCog", owner_id: int, team: Team):
         super().__init__(timeout=300)
         self.cog = cog
@@ -1189,7 +1190,7 @@ class MyTeamActionsView(discord.ui.View):
         )
 
 
-class SponsorOfferActionView(discord.ui.View):
+class SponsorOfferActionView(ReliableView):
     def __init__(self, cog: "TeamsCog", owner_id: int, team: Team, offers):
         super().__init__(timeout=300)
         self.cog = cog
@@ -1279,7 +1280,7 @@ class IdentitySelect(discord.ui.Select):
         await self.identity_view.refresh(interaction)
 
 
-class IntroPhraseModal(discord.ui.Modal, title="Custom Team Intro"): 
+class IntroPhraseModal(ReliableModal, title="Custom Team Intro"): 
     phrase = discord.ui.TextInput(label="Intro phrase", max_length=160, required=False, placeholder="e.g. The Rust Kings roll out under a cloud of bad decisions...")
     def __init__(self, view: "TeamIdentityView"):
         super().__init__()
@@ -1293,7 +1294,7 @@ class IntroPhraseModal(discord.ui.Modal, title="Custom Team Intro"):
         await self.identity_view.refresh(interaction)
 
 
-class TeamIdentityView(discord.ui.View):
+class TeamIdentityView(ReliableView):
     def __init__(self, cog: "TeamsCog", owner_id: int, team: Team, identity, level: int):
         super().__init__(timeout=300)
         self.cog = cog
@@ -1344,7 +1345,7 @@ class AdminTeamCommandSelect(discord.ui.Select):
         await self.parent.on_team(interaction, team)
 
 
-class AdminTeamCommandSelectView(discord.ui.View):
+class AdminTeamCommandSelectView(ReliableView):
     def __init__(self, cog: "TeamsCog", owner_id: int, teams, on_team):
         super().__init__(timeout=180)
         self.cog = cog
