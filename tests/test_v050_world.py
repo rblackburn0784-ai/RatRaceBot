@@ -202,6 +202,20 @@ class PersistentWorldDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Archive Season", values)
 
 
+    async def test_completed_career_recommends_next_season_after_team_is_prepared(self):
+        await self.create_finished_season("Season One")
+        team = self.teams[0]
+        team.parts = full_parts()
+        team.crew = full_crew()
+        await self.db.update_team_parts(int(team.id), team.parts)
+        await self.db.update_team_crew(int(team.id), team.crew)
+        await self.db.save_team_setup(int(team.id), "Street", team.parts)
+        reloaded = await self.db.get_team(int(team.id))
+        snapshot = await build_world_snapshot(self.db, reloaded)
+        self.assertEqual(snapshot["next_key"], "next_season")
+        self.assertIn("next season", snapshot["next_action"].lower())
+
+
 class WorldUiSafetyTests(unittest.IsolatedAsyncioTestCase):
     async def test_world_and_main_menu_respect_discord_component_row_limits(self):
         class DummyCog:
