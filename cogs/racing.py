@@ -18,7 +18,8 @@ from services.race_engine import RaceEngine
 from services.race_report import send_race_report
 from services.race_rules import official_podium
 from services.race_presentation import classification_embed
-from services.race_snapshot import build_replay_snapshot, restore_replay_snapshot
+from services.race_snapshot import build_replay_snapshot, restore_replay_snapshot, restore_replay_rivalry_heat
+from services.racing_world import rivalry_heat_map
 from services.scrutineering import scrutineering_embed
 from services.streamer import RaceStreamer
 from services.team_ids import parse_team_ids_csv
@@ -358,6 +359,7 @@ class RacingCog(commands.Cog):
         replay_source_id: int | None = None,
         weather_key: str | None = None,
         rng_state: tuple | None = None,
+        rivalry_heat_by_pair: dict[tuple[int, int], int] | None = None,
         lobby_reserved: bool = False,
     ) -> None:
         team_ids = [team.id for team in teams if team.id is not None]
@@ -374,6 +376,11 @@ class RacingCog(commands.Cog):
 
         try:
             initial_damage_by_team_id = initial_damage_by_team_id or {}
+            active_rivalry_heat = (
+                rivalry_heat_by_pair
+                if rivalry_heat_by_pair is not None
+                else await rivalry_heat_map(self.bot.db, [int(team_id) for team_id in team_ids if team_id])
+            )
             engine = RaceEngine(
                 track_key,
                 teams,
@@ -382,6 +389,7 @@ class RacingCog(commands.Cog):
                 initial_damage_by_team_id=initial_damage_by_team_id,
                 weather_key=weather_key,
                 rng_state=rng_state,
+                rivalry_heat_by_pair=active_rivalry_heat,
             )
             await channel.send(
                 embed=scrutineering_embed(
@@ -409,6 +417,7 @@ class RacingCog(commands.Cog):
                     initial_damage_by_team_id=initial_damage_by_team_id,
                     weather_key=engine.weather.key,
                     rng_state=engine.initial_rng_state,
+                    rivalry_heat_by_pair=active_rivalry_heat,
                 )
                 race_id = await self.bot.db.save_race(
                     None,
@@ -495,6 +504,7 @@ class RacingCog(commands.Cog):
         replay_source_id: int | None = None,
         weather_key: str | None = None,
         rng_state: tuple | None = None,
+        rivalry_heat_by_pair: dict[tuple[int, int], int] | None = None,
     ) -> None:
         remaining = self._cooldown_remaining(interaction.user.id)
         if remaining:
@@ -514,6 +524,7 @@ class RacingCog(commands.Cog):
             initial_damage_by_team_id=initial_damage_by_team_id,
             weather_key=weather_key,
             rng_state=rng_state,
+            rivalry_heat_by_pair=rivalry_heat_by_pair,
         )
         seed = engine.seed
         embed = race_preflight_embed(
@@ -543,6 +554,7 @@ class RacingCog(commands.Cog):
                 replay_source_id=replay_source_id,
                 weather_key=engine.weather.key if weather_key is not None else None,
                 rng_state=engine.initial_rng_state if rng_state is not None else None,
+                rivalry_heat_by_pair=rivalry_heat_by_pair,
             )
 
         view = ConfirmView(interaction.user.id, "Start Race", run)
@@ -620,11 +632,14 @@ class RacingCog(commands.Cog):
         initial_damage: dict[int, int] = {}
         weather_key: str | None = None
         rng_state: tuple | None = None
+        replay_rivalry_heat: dict[tuple[int, int], int] = {}
         exact_snapshot = bool("replay_json" in race.keys() and race["replay_json"])
 
         if exact_snapshot:
             try:
-                teams, laps, initial_damage, weather_key, rng_state = restore_replay_snapshot(json.loads(race["replay_json"]))
+                snapshot = json.loads(race["replay_json"])
+                teams, laps, initial_damage, weather_key, rng_state = restore_replay_snapshot(snapshot)
+                replay_rivalry_heat = restore_replay_rivalry_heat(snapshot)
             except (TypeError, ValueError, KeyError, json.JSONDecodeError) as exc:
                 await interaction.response.send_message(f"Saved replay snapshot is invalid: {exc}", ephemeral=True)
                 return
@@ -656,6 +671,7 @@ class RacingCog(commands.Cog):
             replay_source_id=race_id,
             weather_key=weather_key,
             rng_state=rng_state,
+            rivalry_heat_by_pair=replay_rivalry_heat if exact_snapshot else {},
         )
 
     @app_commands.command(name="track_cards", description="Show track cards with difficulty and hazards.")
