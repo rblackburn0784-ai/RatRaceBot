@@ -9,6 +9,7 @@ from services.predictions import PredictionView
 from services.race_newspaper import render_race_newspaper
 from services.race_presentation import classification_embed
 from services.race_rewards import process_race_rewards
+from services.racing_world import build_gazette_story, rivalry_watch_embed
 from services.story import race_recap_embed, race_story_embed
 
 
@@ -38,16 +39,21 @@ async def send_race_report(
         if award_rewards
         else []
     )
-    if rivalry_watch is None and award_rewards:
-        rivalry_watch = await db.race_rivalry_watch([
-            {
-                "team_id": result.team_id, "position": result.position, "total_time": result.total_time,
-                "crashes": result.crashes, "illegal_moves": result.illegal_moves,
-                "disqualified": result.disqualified, "dnf": result.dnf,
-            }
-            for result in results
-        ])
-    story_embed = race_story_embed(rivalry_watch or [])
+
+    team_ids = [int(result.team_id) for result in results if int(result.team_id) > 0]
+    if award_rewards:
+        story_embed = await rivalry_watch_embed(db, team_ids)
+    else:
+        story_embed = race_story_embed(rivalry_watch or [])
+
+    gazette_story = await build_gazette_story(
+        db,
+        race_id=race_id,
+        track_key=track_key,
+        results=results,
+        events=events,
+        teams=teams,
+    )
 
     newspaper = render_race_newspaper(
         results=results,
@@ -58,13 +64,15 @@ async def send_race_report(
         prediction_embed=prediction_results,
         rivalry_embed=story_embed,
         reward_embeds=reward_embeds,
+        gazette_story=gazette_story,
     )
-    # v0.4.4: the official classification is always posted, even when the
-    # newspaper renderer succeeds. Track-record notifications are also explicit
-    # rather than being hidden inside the Gazette image.
+
+    # Official classification, new records and world decisions are explicit even
+    # when the image Gazette renders successfully.
     await channel.send(embed=final_embed)
+    explicit_titles = {"Track Record Board", "Blacktop World Event"}
     for embed in reward_embeds:
-        if embed.title == "Track Record Board":
+        if embed.title in explicit_titles or (embed.title and any(token in embed.title for token in ("Garage Break-In", "Sponsor Dispute", "Newspaper Hype", "Crew Argument", "Surprise Inspection", "Engine Supplier", "Weather Forecast", "Track Repairs"))):
             await channel.send(embed=embed)
 
     if newspaper:
@@ -81,5 +89,5 @@ async def send_race_report(
     if story_embed:
         await channel.send(embed=story_embed)
     for embed in reward_embeds:
-        if embed.title != "Track Record Board":
+        if embed.title not in explicit_titles and not (embed.title and any(token in embed.title for token in ("Garage Break-In", "Sponsor Dispute", "Newspaper Hype", "Crew Argument", "Surprise Inspection", "Engine Supplier", "Weather Forecast", "Track Repairs"))):
             await channel.send(embed=embed)

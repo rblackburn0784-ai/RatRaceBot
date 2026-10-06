@@ -29,6 +29,7 @@ from services.predictions import PredictionView
 from services.race_engine import RaceEngine
 from services.race_report import send_race_report
 from services.race_snapshot import build_replay_snapshot
+from services.racing_world import rivalry_heat_map
 from services.scrutineering import scrutineering_embed
 from services.story import season_history_lines
 from services.streamer import RaceStreamer
@@ -486,9 +487,16 @@ class TournamentsCog(commands.Cog):
 
         try:
             carryover_damage = await self.bot.db.tournament_carryover_damage(tournament_id)
+            active_rivalry_heat = await rivalry_heat_map(self.bot.db, requested_ids)
             damaged_teams = [team for team in teams if carryover_damage.get(team.id or 0, 0) > 0]
             damage_note = f" {len(damaged_teams)} team(s) are carrying repaired damage." if damaged_teams else ""
-            engine = RaceEngine(track_key, teams, seed, initial_damage_by_team_id=carryover_damage)
+            engine = RaceEngine(
+                track_key,
+                teams,
+                seed,
+                initial_damage_by_team_id=carryover_damage,
+                rivalry_heat_by_pair=active_rivalry_heat,
+            )
             await self._send_private(interaction, "Tournament race is starting in the channel.")
             await interaction.channel.send(
                 f"Tournament race started: **{TRACKS[track_key].name}** with {len(teams)} teams. "
@@ -520,6 +528,7 @@ class TournamentsCog(commands.Cog):
                 initial_damage_by_team_id=carryover_damage,
                 weather_key=engine.weather.key,
                 rng_state=engine.initial_rng_state,
+                rivalry_heat_by_pair=active_rivalry_heat,
             )
             try:
                 race_id = await self.bot.db.save_tournament_race(

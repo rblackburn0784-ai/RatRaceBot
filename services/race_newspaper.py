@@ -43,6 +43,7 @@ def render_race_newspaper(
     prediction_embed: discord.Embed | None = None,
     rivalry_embed: discord.Embed | None = None,
     reward_embeds: list[discord.Embed] | None = None,
+    gazette_story: dict[str, str] | None = None,
 ) -> BytesIO | None:
     if Image is None or ImageDraw is None or ImageFont is None or not results:
         return None
@@ -52,6 +53,7 @@ def render_race_newspaper(
     if winner is None:
         return None
     rewards = reward_embeds or []
+    story = gazette_story or {}
 
     fonts = _fonts()
     image = _template_image()
@@ -67,6 +69,7 @@ def render_race_newspaper(
             prediction_embed=prediction_embed,
             rivalry_embed=rivalry_embed,
             reward_embeds=rewards,
+            gazette_story=story,
         )
         output = BytesIO()
         image.save(output, format="PNG", optimize=True)
@@ -77,14 +80,14 @@ def render_race_newspaper(
     _paper_texture(image)
     draw = ImageDraw.Draw(image)
 
-    _draw_masthead(draw, title, track_name, weather_name, winner, fonts)
+    _draw_masthead(draw, title, track_name, weather_name, winner, fonts, story)
     _draw_race_art(draw, (34, 360, WIDTH - 34, 790), winner, track_name, fonts)
 
     _section(
         draw,
         (34, 815, 465, 1145),
         "RACE RECAP",
-        _race_recap_lines(ordered, title, track_name, weather_name),
+        _gazette_recap_lines(ordered, title, track_name, weather_name, story),
         fonts,
         RED,
     )
@@ -125,7 +128,7 @@ def render_race_newspaper(
         draw,
         (865, 1170, WIDTH - 34, 1395),
         "WINNER'S QUOTE",
-        _winner_quote_lines(rewards, winner),
+        [story["pit_lane_quote"]] if story.get("pit_lane_quote") else _winner_quote_lines(rewards, winner),
         fonts,
         BLUE,
     )
@@ -134,7 +137,7 @@ def render_race_newspaper(
         draw,
         (34, 1420, 255, 1660),
         "SCANDAL NOTE",
-        _scandal_lines(ordered),
+        [story["scandal"]] if story.get("scandal") else _scandal_lines(ordered),
         fonts,
         RED,
     )
@@ -142,7 +145,7 @@ def render_race_newspaper(
         draw,
         (280, 1420, 525, 1660),
         "RIVALRY WATCH",
-        _embed_lines(rivalry_embed, "No grudges boiled over."),
+        [story["rivalry_story"]] if story.get("rivalry_story") else _embed_lines(rivalry_embed, "No grudges boiled over."),
         fonts,
         BLUE,
     )
@@ -158,7 +161,7 @@ def render_race_newspaper(
         draw,
         (935, 1420, WIDTH - 34, 1660),
         "SPONSOR OFFERS",
-        _embed_lines(_find_embed(rewards, "Sponsor Offers"), "No fresh sponsor interest."),
+        [story["sponsor_story"]] if story.get("sponsor_story") else _embed_lines(_find_embed(rewards, "Sponsor Offers"), "No fresh sponsor interest."),
         fonts,
         BLUE,
     )
@@ -175,7 +178,7 @@ def render_race_newspaper(
         draw,
         (510, 1685, WIDTH - 34, HEIGHT - 34),
         "BIG MOVE",
-        _big_move_lines(ordered),
+        [story["biggest_move"]] if story.get("biggest_move") else _big_move_lines(ordered),
         fonts,
         RED,
         body_font=fonts["headline"],
@@ -208,6 +211,7 @@ def _draw_template_report(
     prediction_embed: discord.Embed | None,
     rivalry_embed: discord.Embed | None,
     reward_embeds: list[discord.Embed],
+    gazette_story: dict[str, str],
 ) -> None:
     draw = ImageDraw.Draw(image)
     winner = official_winner(ordered)
@@ -217,7 +221,7 @@ def _draw_template_report(
 
     _centered_fit_shrink(
         draw,
-        _headline(winner, track_name).upper(),
+        gazette_story.get("headline", _headline(winner, track_name)).upper(),
         (22, 170, image.width - 22, 240),
         template_fonts["headline"],
         INK,
@@ -225,7 +229,10 @@ def _draw_template_report(
     )
     _centered_fit_shrink(
         draw,
-        f"{winner.driver_name} brings {winner.team_name} home first in {weather_name} at {track_name}.",
+        gazette_story.get(
+            "championship_situation",
+            f"{winner.driver_name} brings {winner.team_name} home first in {weather_name} at {track_name}.",
+        ),
         (64, 246, image.width - 64, 285),
         template_fonts["subhead"],
         INK,
@@ -233,7 +240,7 @@ def _draw_template_report(
     )
     _draw_stamp(draw, title, track_name, weather_name, template_fonts)
 
-    _draw_lines(draw, (34, 646, 355, 850), _race_recap_lines(ordered, title, track_name, weather_name), template_fonts["body_bold"], line_height=19)
+    _draw_lines(draw, (34, 646, 355, 850), _gazette_recap_lines(ordered, title, track_name, weather_name, gazette_story), template_fonts["body_bold"], line_height=19)
     _draw_lines(draw, (410, 646, 690, 850), _template_standings_lines(ordered), template_fonts["body_bold"], line_height=19)
     _draw_award_values(draw, ordered, template_fonts)
 
@@ -246,13 +253,42 @@ def _draw_template_report(
     _draw_fit_text(draw, str(sum(result.near_misses for result in ordered)), (112, 1020, 148, 1036), template_fonts["body_bold"], INK, min_size=10)
 
     _draw_template_records(draw, reward_embeds, template_fonts)
-    _draw_template_quote(draw, reward_embeds, winner, template_fonts)
-    _draw_lines(draw, (46, 1150, 184, 1212), _scandal_lines(ordered)[1:], template_fonts["small"], line_height=14, center=True)
-    _draw_lines(draw, (238, 1118, 408, 1284), _embed_lines(rivalry_embed, "No grudges boiled over.")[:5], template_fonts["small_bold"], line_height=18)
+    if gazette_story.get("pit_lane_quote"):
+        _draw_lines(draw, (742, 916, 1070, 1058), [gazette_story["pit_lane_quote"]], template_fonts["small_bold"], line_height=18, center=True)
+    else:
+        _draw_template_quote(draw, reward_embeds, winner, template_fonts)
+    _draw_lines(
+        draw,
+        (46, 1150, 184, 1212),
+        [gazette_story["scandal"]] if gazette_story.get("scandal") else _scandal_lines(ordered)[1:],
+        template_fonts["small"],
+        line_height=14,
+        center=True,
+    )
+    _draw_lines(
+        draw,
+        (238, 1118, 408, 1284),
+        ([gazette_story["rivalry_story"]] if gazette_story.get("rivalry_story") else _embed_lines(rivalry_embed, "No grudges boiled over."))[:5],
+        template_fonts["small_bold"],
+        line_height=18,
+    )
     _draw_lines(draw, (472, 1115, 716, 1288), _embed_lines(_find_embed(reward_embeds, "New Achievements"), "No new badges unlocked.")[:8], template_fonts["small_bold"], line_height=18)
-    _draw_lines(draw, (760, 1146, 1070, 1278), _embed_lines(_find_embed(reward_embeds, "Sponsor Offers"), "No fresh sponsor interest.")[:6], template_fonts["small_bold"], line_height=22)
+    _draw_lines(
+        draw,
+        (760, 1146, 1070, 1278),
+        ([gazette_story["sponsor_story"]] if gazette_story.get("sponsor_story") else _embed_lines(_find_embed(reward_embeds, "Sponsor Offers"), "No fresh sponsor interest."))[:6],
+        template_fonts["small_bold"],
+        line_height=22,
+    )
     _draw_template_prediction(draw, prediction_embed, winner, template_fonts)
-    _centered_fit_shrink(draw, _big_move_lines(ordered)[0], (465, 1348, 1025, 1396), template_fonts["big_move"], INK, min_size=24)
+    _centered_fit_shrink(
+        draw,
+        gazette_story.get("biggest_move", _big_move_lines(ordered)[0]),
+        (465, 1348, 1025, 1396),
+        template_fonts["big_move"],
+        INK,
+        min_size=24,
+    )
 
 
 def _template_fonts() -> dict[str, object]:
@@ -424,7 +460,15 @@ def _fonts() -> dict[str, object]:
     }
 
 
-def _draw_masthead(draw, title: str, track_name: str, weather_name: str, winner: RaceResult, fonts: dict[str, object]) -> None:
+def _draw_masthead(
+    draw,
+    title: str,
+    track_name: str,
+    weather_name: str,
+    winner: RaceResult,
+    fonts: dict[str, object],
+    gazette_story: dict[str, str] | None = None,
+) -> None:
     _centered(draw, "BLACKTOP GAZETTE", (0, 20, WIDTH, 145), fonts["masthead"], INK)
     draw.line((34, 150, WIDTH - 34, 150), fill=INK, width=5)
     _centered(draw, "* ALL THE DIRT. NONE OF THE FILTER. *", (0, 154, WIDTH, 192), fonts["section"], INK)
@@ -441,9 +485,13 @@ def _draw_masthead(draw, title: str, track_name: str, weather_name: str, winner:
     _centered(draw, "RACE", (34, 80, 190, 108), fonts["section"], RED)
     _centered(draw, "EDITION", (34, 112, 190, 138), fonts["section"], RED)
 
-    headline = f"{winner.team_name} Take {track_name}"
+    story = gazette_story or {}
+    headline = story.get("headline", f"{winner.team_name} Take {track_name}")
     _centered_fit(draw, headline.upper(), (34, 220, WIDTH - 34, 292), fonts["headline"], INK)
-    subtitle = f"{winner.driver_name} brings {winner.team_name} home first in {weather_name} at {track_name}."
+    subtitle = story.get(
+        "championship_situation",
+        f"{winner.driver_name} brings {winner.team_name} home first in {weather_name} at {track_name}.",
+    )
     _centered_fit(draw, subtitle, (34, 300, WIDTH - 34, 345), fonts["subhead"], INK)
 
 
@@ -552,6 +600,24 @@ def _race_recap_lines(ordered: list[RaceResult], title: str, track_name: str, we
         f"Pit Lane Hero: {pit_hero.team_name} - {pit_hero.pit_stops} stops",
         f"Near Miss Nerves: {near_miss.team_name} - {near_miss.near_misses} near misses",
     ]
+
+
+def _gazette_recap_lines(
+    ordered: list[RaceResult],
+    title: str,
+    track_name: str,
+    weather_name: str,
+    story: dict[str, str] | None = None,
+) -> list[str]:
+    story = story or {}
+    lines = _race_recap_lines(ordered, title, track_name, weather_name)
+    if story.get("race_winner"):
+        lines[2] = f"Winner: {story['race_winner']}"
+    if story.get("championship_situation"):
+        lines.insert(3, story["championship_situation"])
+    if story.get("upcoming_race"):
+        lines.append(story["upcoming_race"])
+    return lines
 
 
 def _standings_lines(ordered: list[RaceResult]) -> list[str]:

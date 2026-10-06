@@ -24,7 +24,25 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - Discord ownership controls: admins can use all commands, while regular drivers can create one linked team and manage only their own team/parts wizards.
 - Deterministic race seed plus full build/laps/damage replay snapshot saved for new races.
 - `/race_replay` is non-destructive: it does not duplicate career stats, XP, achievements, sponsors, fatigue, or track records.
+- Persistent 0–100 rivalry heat now follows actual overtakes, contact, illegal moves, title battles, stolen wins and explicitly attributed caused DNFs.
+- Dynamic Blacktop Gazette coverage pulls in championship position, rivalry story, scandal, pit-lane quote, sponsor angle and the next scheduled race.
+- Low-impact Racing World decisions create persistent paddock stories without hidden performance punishment.
 
+
+## v0.4.8 rivalries, stories & racing world
+
+- Rivalry heat now uses a **0–100** scale and is attributed from real actor/target race events rather than simply assuming adjacent classified cars were rivals.
+- Heat grows from repeated overtakes, close finishes, contact/illegal moves, live championship battles, stolen final-lap wins and explicitly attributed caused DNFs.
+- At **50+ heat**, live commentary starts calling out the feud; at **70+**, it can describe the rivalry as boiling over.
+- Rivalries remain flavour-first. They never add raw performance, and the only situational probability change is capped at **+0.8 percentage points** of illegal-contact pressure at maximum heat.
+- /rivalry_story exposes the richer feud history with heat bars and story counters.
+- The **Blacktop Gazette** now builds a dynamic headline plus winner, championship situation, biggest move, scandal/crash, rivalry, pit-lane quote, sponsor and upcoming-race stories.
+- Persisted races can create occasional **Racing World** decisions such as sponsor disputes, garage break-ins, inspections, crew arguments or weather/track stories.
+- World events are choices rather than random punishment and do not secretly change car stats, driver stats, points or race pace. Use /world_events and /world_event_choose.
+- Replay snapshots now preserve the rivalry heat context used by that race so later rivalry changes do not rewrite replay behaviour.
+- v0.4.8 adds dedicated regression coverage plus a GitHub verification workflow.
+
+See STORIES_v0.4.8.md for the heat model and world-event details, and UPGRADE_v0.4.8.md before upgrading an existing install.
 
 ## v0.4.7 championships & season structure
 

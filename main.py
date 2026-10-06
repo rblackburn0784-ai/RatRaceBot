@@ -15,6 +15,7 @@ COGS = [
     "cogs.teams",
     "cogs.racing",
     "cogs.tournaments",
+    "cogs.world",
     "cogs.menu",
 ]
 
