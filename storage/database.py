@@ -690,6 +690,7 @@ class Database:
                 conn.execute("DELETE FROM team_profiles WHERE team_id=?", (team_id,))
                 conn.execute("DELETE FROM team_progress WHERE team_id=?", (team_id,))
                 conn.execute("DELETE FROM team_achievements WHERE team_id=?", (team_id,))
+                conn.execute("DELETE FROM team_season_history WHERE team_id=?", (team_id,))
                 conn.execute("DELETE FROM sponsor_offers WHERE team_id=?", (team_id,))
                 conn.execute("DELETE FROM team_identity WHERE team_id=?", (team_id,))
                 conn.execute("DELETE FROM team_fatigue WHERE team_id=?", (team_id,))
