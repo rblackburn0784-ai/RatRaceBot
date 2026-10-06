@@ -395,6 +395,12 @@ class Database:
         # v0.5: preserve every completed pre-v0.5 season as permanent per-team
         # history. This is idempotent and intentionally uses the frozen season
         # snapshot rather than today's mutable team profile.
+        def legacy_int(value, default: int = 0) -> int:
+            try:
+                return int(value if value is not None else default)
+            except (TypeError, ValueError):
+                return default
+
         legacy_seasons = conn.execute(
             """
             SELECT tournament_id, tournament_name, standings_json, awards_json,
@@ -415,16 +421,18 @@ class Database:
             if not isinstance(standings, list):
                 continue
             for final_position, standing in enumerate(standings, start=1):
-                try:
-                    team_id = int(standing.get("team_id") or 0)
-                except (TypeError, ValueError, AttributeError):
+                if not isinstance(standing, dict):
                     continue
+                team_id = legacy_int(standing.get("team_id"))
                 if team_id <= 0:
                     continue
-                team_awards = [
-                    award for award in awards
-                    if isinstance(award, dict) and int(award.get("team_id") or 0) == team_id
-                ] if isinstance(awards, list) else []
+                team_awards = []
+                if isinstance(awards, list):
+                    for award in awards:
+                        if not isinstance(award, dict):
+                            continue
+                        if legacy_int(award.get("team_id")) == team_id:
+                            team_awards.append(award)
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO team_season_history(
@@ -436,13 +444,13 @@ class Database:
                     """,
                     (
                         team_id,
-                        int(season["tournament_id"]),
+                        legacy_int(season["tournament_id"]),
                         str(season["tournament_name"]),
                         final_position,
-                        int(standing.get("points") or 0),
-                        int(standing.get("wins") or 0),
-                        int(standing.get("podiums") or 0),
-                        int(standing.get("fastest_laps") or 0),
+                        legacy_int(standing.get("points")),
+                        legacy_int(standing.get("wins")),
+                        legacy_int(standing.get("podiums")),
+                        legacy_int(standing.get("fastest_laps")),
                         json.dumps(team_awards),
                         str(season["summary_json"] or "{}"),
                         str(season["completed_at"]),
