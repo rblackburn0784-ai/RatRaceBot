@@ -29,6 +29,10 @@ async def safe_reply(
 class ReliableView(discord.ui.View):
     """Shared UI error boundary for all interactive Rat Rod views."""
 
+    def _disable(self) -> None:
+        for item in self.children:
+            item.disabled = True
+
     async def on_error(
         self,
         interaction: discord.Interaction,
