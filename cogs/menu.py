@@ -4,7 +4,7 @@ from discord.ext import commands
 
 from cogs.admin import AdminPanelView, TeamSelectView, admin_panel_embed, admin_panel_file
 from cogs.racing import RaceWizardView
-from cogs.teams import EditTeamWizardView, MyTeamActionsView, PitCrewWizardView, SponsorOfferActionView, TeamIdentityView, TeamWizardView, team_identity_embed
+from cogs.teams import EditTeamWizardView, GarageView, MyTeamActionsView, PitCrewWizardView, SetupManagerView, SponsorOfferActionView, TeamIdentityView, TeamWizardView, team_identity_embed
 from config import BOT_VERSION
 from services.access import is_admin
 from services.championship import championship_hub_embed
@@ -113,6 +113,7 @@ class WorldHubView(ReliableView):
             ("world_events", "World Stories", 1, discord.ButtonStyle.secondary),
             ("gazette", "Gazette", 1, discord.ButtonStyle.secondary),
             ("history", "Team History", 1, discord.ButtonStyle.secondary),
+            ("setups", "Track Setups", 2, discord.ButtonStyle.primary),
             ("awards", "Season Awards", 2, discord.ButtonStyle.secondary),
             ("recommended", "▶ Recommended Next", 2, discord.ButtonStyle.success),
             ("refresh", "Refresh World", 2, discord.ButtonStyle.primary),
@@ -153,14 +154,11 @@ class WorldHubView(ReliableView):
             if team and not teams_cog:
                 await interaction.response.send_message("Garage tools are not loaded.", ephemeral=True)
             return
-        profile = await self.cog.bot.db.team_profile(team.id)
-        rivalries = await self.cog.bot.db.team_rivalries(team.id, limit=1)
-        locked = await self.cog.bot.db.team_in_open_tournament(team.id)
-        await interaction.response.send_message(
-            embed=garage_summary_embed(team, profile, rivalries, locked),
-            view=MyTeamActionsView(teams_cog, interaction.user.id, team),
-            ephemeral=True,
-        )
+        progress = await self.cog.bot.db.team_progress(team.id)
+        level = level_for_xp(int(progress["xp"]) if progress else 0)
+        setups = await self.cog.bot.db.team_setups(team.id)
+        view = GarageView(teams_cog, interaction.user.id, team, setups, level)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
     async def _handle_crew(self, interaction: discord.Interaction) -> None:
         team = await self._require_team(interaction)
@@ -268,6 +266,30 @@ class WorldHubView(ReliableView):
                 await self.cog.bot.db.team_career_summary(team.id),
                 await self.cog.bot.db.team_season_history(team.id),
             ),
+            ephemeral=True,
+        )
+
+    async def _handle_setups(self, interaction: discord.Interaction) -> None:
+        team = await self._require_team(interaction)
+        teams_cog = self.cog.teams_cog()
+        if not team or not teams_cog:
+            if team and not teams_cog:
+                await interaction.response.send_message("Track setup tools are not loaded.", ephemeral=True)
+            return
+        progress = await self.cog.bot.db.team_progress(team.id)
+        level = level_for_xp(int(progress["xp"]) if progress else 0)
+        setups = await self.cog.bot.db.team_setups(team.id)
+        view = SetupManagerView(teams_cog, interaction.user.id, team, setups, "load", level)
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title=f"Track Setups — {team.name}",
+                description=(
+                    "Save the current hardware into an unlocked preset or load an existing setup before a race. "
+                    "Setups change choices, not the underlying progression balance."
+                ),
+                color=discord.Color.dark_teal(),
+            ),
+            view=view,
             ephemeral=True,
         )
 
