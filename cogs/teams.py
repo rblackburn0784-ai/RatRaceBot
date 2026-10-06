@@ -35,7 +35,7 @@ from services.scrutineering import scrutineering_embed
 from services.story import hall_of_fame_embed, reputation_embed, rivalries_embed
 from services.team_sheet import render_team_sheet
 from services.views import ConfirmView, PaginatedTextView
-from services.ui_safety import ReliableView
+from services.ui_safety import ReliableModal, ReliableView
 
 
 STAT_CHOICES = [app_commands.Choice(name=str(i), value=i) for i in range(1, 9)]
@@ -265,7 +265,7 @@ class CarTypeSelect(discord.ui.Select):
         await self.wizard.refresh(interaction)
 
 
-class TeamDetailsModal(discord.ui.Modal):
+class TeamDetailsModal(ReliableModal):
     def __init__(self, wizard: "TeamWizardView"):
         super().__init__(title="Team Details")
         self.wizard = wizard
@@ -309,7 +309,7 @@ class TeamDetailsModal(discord.ui.Modal):
         await self.wizard.refresh(interaction)
 
 
-class DriverStatsModal(discord.ui.Modal):
+class DriverStatsModal(ReliableModal):
     def __init__(self, wizard: "TeamWizardView"):
         super().__init__(title="Driver Stats")
         self.wizard = wizard
@@ -1280,7 +1280,7 @@ class IdentitySelect(discord.ui.Select):
         await self.identity_view.refresh(interaction)
 
 
-class IntroPhraseModal(discord.ui.Modal, title="Custom Team Intro"): 
+class IntroPhraseModal(ReliableModal, title="Custom Team Intro"): 
     phrase = discord.ui.TextInput(label="Intro phrase", max_length=160, required=False, placeholder="e.g. The Rust Kings roll out under a cloud of bad decisions...")
     def __init__(self, view: "TeamIdentityView"):
         super().__init__()
