@@ -204,16 +204,16 @@ class WorldUiSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(view.begin_once())
         self.assertFalse(view.begin_once())
 
-    async def test_all_project_views_use_shared_error_boundary(self):
+    async def test_all_project_views_and_modals_use_shared_error_boundaries(self):
         root = Path(__file__).resolve().parents[1]
         checked = [
             root / "cogs" / name
-            for name in ("admin.py", "menu.py", "racing.py", "teams.py", "tournaments.py")
+            for name in ("admin.py", "menu.py", "racing.py", "teams.py", "tournaments.py", "world.py")
         ] + [root / "services" / "views.py"]
         offenders = []
         for path in checked:
             text = path.read_text(encoding="utf-8")
-            if "(discord.ui.View):" in text:
+            if "(discord.ui.View):" in text or "(discord.ui.Modal" in text:
                 offenders.append(path.name)
         self.assertEqual(offenders, [])
 
