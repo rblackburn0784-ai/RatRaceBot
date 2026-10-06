@@ -27,11 +27,35 @@ async def safe_reply(
 
 
 class ReliableView(discord.ui.View):
-    """Shared UI error boundary for all interactive Rat Rod views."""
+    """Shared UI error boundary plus best-effort stale-control cleanup."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._bound_message = None
+
+    def bind_message(self, message) -> None:
+        self._bound_message = message
 
     def _disable(self) -> None:
         for item in self.children:
             item.disabled = True
+
+    async def _scheduled_task(self, item, interaction):
+        # discord.py does not automatically retain the source message on View.
+        # Capture it on every component interaction so timeout cleanup can edit it.
+        message = getattr(interaction, "message", None)
+        if message is not None:
+            self._bound_message = message
+        return await super()._scheduled_task(item, interaction)
+
+    async def on_timeout(self) -> None:
+        self._disable()
+        if self._bound_message is None:
+            return
+        try:
+            await self._bound_message.edit(view=self)
+        except (discord.HTTPException, discord.NotFound, discord.Forbidden):
+            LOGGER.info("Could not disable timed-out %s controls in Discord", self.__class__.__name__)
 
     async def on_error(
         self,
@@ -47,7 +71,7 @@ class ReliableView(discord.ui.View):
         )
         await safe_reply(
             interaction,
-            "That control could not be completed. Nothing else was changed. Refresh this screen or use `/menu` and try again.",
+            "That control could not be completed. Refresh this screen or use `/menu` or `/world` and try again.",
             ephemeral=True,
         )
 
@@ -77,6 +101,17 @@ class ReliableModal(discord.ui.Modal):
         )
         await safe_reply(
             interaction,
-            "That form could not be completed. Nothing else was changed. Reopen the screen and try again.",
+            "That form could not be completed. Reopen the screen and try again.",
             ephemeral=True,
         )
+
+
+async def bind_view_to_interaction(view: ReliableView, interaction: discord.Interaction) -> None:
+    """Bind a newly-sent View to its message so timeout can visibly disable it."""
+    try:
+        message = getattr(interaction, "message", None)
+        if message is None:
+            message = await interaction.original_response()
+        view.bind_message(message)
+    except (discord.HTTPException, discord.NotFound, discord.Forbidden, AttributeError):
+        LOGGER.debug("Could not bind %s to an interaction message", view.__class__.__name__)
