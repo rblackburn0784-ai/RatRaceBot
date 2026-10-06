@@ -36,6 +36,7 @@ from services.story import season_history_lines
 from services.streamer import RaceStreamer
 from services.team_ids import parse_team_ids_csv
 from services.views import ConfirmView, PaginatedTextView
+from services.ui_safety import ReliableView
 
 
 TOURNAMENT_LENGTHS = {
@@ -270,7 +271,7 @@ class TournamentLengthSelect(discord.ui.Select):
         await self.wizard.refresh(interaction)
 
 
-class TournamentWizardView(discord.ui.View):
+class TournamentWizardView(ReliableView):
     def __init__(self, cog: "TournamentsCog", owner_id: int, teams):
         super().__init__(timeout=600)
         self.cog = cog
