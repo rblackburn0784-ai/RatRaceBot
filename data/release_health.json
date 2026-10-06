@@ -1,8 +1,7 @@
 {
-  "version": "0.5",
-  "tests": "PASS",
-  "test_count": 108,
-  "balance_lab": "PASS",
-  "verified_commit": "ef1dedde8efca9036a4a049834b535dd919d2688",
-  "note": "Full pytest suite and full deterministic Balance Lab passed on the verified v0.5 feature head."
+  "version": "0.5.1",
+  "tests": "PENDING",
+  "balance_lab": "PENDING",
+  "verified_commit": null,
+  "note": "Pending full Python 3.12/3.13 regression verification and deterministic Balance Lab."
 }
