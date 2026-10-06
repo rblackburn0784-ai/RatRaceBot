@@ -13,6 +13,7 @@ from services.engagement import (
     xp_for_result,
 )
 from services.race_rules import is_official_finisher, official_podium, official_winner
+from services.racing_world import maybe_create_world_event, record_race_world, world_event_embed
 from services.sponsors import sponsor_by_key
 
 
@@ -101,7 +102,17 @@ async def process_race_rewards(
         track_records=record_candidates,
     )
 
+    await record_race_world(db, race_id, saved_results, events)
+    world_event = await maybe_create_world_event(
+        db,
+        race_id=race_id,
+        track_key=track_key,
+        teams=teams,
+    )
+
     embeds: list[discord.Embed] = []
+    if world_event and world_event.get("status") == "pending":
+        embeds.append(world_event_embed(world_event))
     new_records = processing.get("new_records", [])
     if new_records:
         embed = discord.Embed(title="Track Record Board", color=discord.Color.blue())
