@@ -1,6 +1,8 @@
 {
   "version": "0.4.9",
-  "tests": "PENDING",
-  "balance_lab": "PENDING",
-  "verified_commit": null
+  "tests": "PASS",
+  "test_count": 93,
+  "balance_lab": "PASS",
+  "verified_commit": "192fdfe632e117158cce1a97a32207692ee7b828",
+  "note": "Full pytest suite and full deterministic Balance Lab passed on the verified code head."
 }
