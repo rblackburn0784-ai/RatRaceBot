@@ -29,6 +29,18 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - Low-impact Racing World decisions create persistent paddock stories without hidden performance punishment.
 
 
+## v0.4.9 polish, administration & release candidate
+
+- v0.4.9 is the **v0.5 release candidate**. No new gameplay systems are added.
+- Every new persisted race gets an automatic pre-race SQLite checkpoint before results/progression are committed.
+- `/undo_last_race`, `/reprocess_race` and `/correct_result` use that checkpoint and intentionally refuse to rewrite older/non-latest races.
+- `/resume_interrupted_race` continues Discord presentation from the last confirmed event without resimulating or re-awarding the race.
+- `/restore_tournament`, `/repair_team_data`, `/validate_database`, hardened `/backup_database`, and `/restore_backup` provide tournament/admin recovery.
+- `/admin_health` reports bot/database/commands/media/tournament/race/backup state plus the release test and Balance Lab gate.
+- Destructive recovery actions create safety backups, and database restores require a successful SQLite integrity check.
+- GitHub release verification now runs the **full pytest suite and the full Balance Lab** on every PR to `main` and every release/main push.
+- See `RELEASE_CANDIDATE_v0.4.9.md`, `TEST_MATRIX_v0.4.9.md`, and `UPGRADE_v0.4.9.md` for the recovery policy and release gate.
+
 ## v0.4.8 rivalries, stories & racing world
 
 - Rivalry heat now uses a **0–100** scale and is attributed from real actor/target race events rather than simply assuming adjacent classified cars were rivals.

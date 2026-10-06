@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -351,6 +352,7 @@ class AdminPanelView(discord.ui.View):
             ("race_demo", "Race Demo", 4, discord.ButtonStyle.danger),
             ("race_replay", "Race Replay", 4, discord.ButtonStyle.danger),
             ("backup_database", "Backup DB", 4, discord.ButtonStyle.primary),
+            ("admin_health", "Health", 4, discord.ButtonStyle.success),
         ]
         for key, label, row, style in buttons:
             self.add_item(AdminActionButton(key, label, row, style))
@@ -819,6 +821,13 @@ class AdminPanelView(discord.ui.View):
     async def _handle_backup_database(self, interaction: discord.Interaction) -> None:
         await self.cog.backup_database(interaction)
 
+    async def _handle_admin_health(self, interaction: discord.Interaction) -> None:
+        recovery_cog = self.cog.bot.get_cog("RecoveryCog")
+        if not recovery_cog:
+            await interaction.response.send_message("Recovery/health tools are not loaded.", ephemeral=True)
+            return
+        await recovery_cog.admin_health.callback(recovery_cog, interaction)
+
     async def _confirm_single_race(
         self,
         interaction: discord.Interaction,
@@ -986,23 +995,16 @@ class AdminCog(commands.Cog):
         view = PaginatedTextView(interaction.user.id, "Parts Catalogue", parts_catalogue_lines(), per_page=12)
         await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
-    @app_commands.command(name="backup_database", description="Admin: create a timestamped database backup.")
+    @app_commands.command(name="backup_database", description="Admin: create a consistent timestamped SQLite backup.")
     async def backup_database(self, interaction: discord.Interaction):
-        db_path = Path(self.bot.settings.database_path)
-        if not db_path.exists():
-            await interaction.response.send_message("Database file not found yet.", ephemeral=True)
-            return
-        backup_dir = Path("backups")
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        backup_path = backup_dir / f"{db_path.stem}_{timestamp}{db_path.suffix or '.sqlite3'}"
+        await interaction.response.defer(ephemeral=True)
         try:
-            shutil.copy2(db_path, backup_path)
-        except OSError as exc:
-            await interaction.response.send_message(f"Backup failed: {exc}", ephemeral=True)
+            backup_path = await self.bot.recovery.backup_database("manual")
+        except (OSError, sqlite3.DatabaseError) as exc:
+            await interaction.followup.send(f"Backup failed: {exc}", ephemeral=True)
             return
         await audit_log(self.bot, "Database Backup Created", str(backup_path), interaction.user)
-        await interaction.response.send_message(f"Database backup created: `{backup_path}`", ephemeral=True)
+        await interaction.followup.send(f"Database backup created: {backup_path}", ephemeral=True)
 
     @app_commands.command(name="admin_panel", description="Open a quick admin control panel.")
     async def admin_panel(self, interaction: discord.Interaction):

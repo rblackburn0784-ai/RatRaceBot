@@ -1,4 +1,4 @@
-Rat Rod Racing Bot v0.4.8 — Rivalries, Stories & Racing World
+Rat Rod Racing Bot v0.4.9 — Polish, Administration & Release Candidate
 Release date: 2026-10-06
 
-See UPGRADE_v0.4.8.md before replacing an existing installation.
+This is the v0.5 release candidate. See UPGRADE_v0.4.9.md before replacing an existing installation.

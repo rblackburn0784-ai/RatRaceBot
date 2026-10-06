@@ -16,6 +16,7 @@ from services.audit import audit_log
 from services.preflight import race_preflight_embed
 from services.race_engine import RaceEngine
 from services.race_report import send_race_report
+from services.race_rewards import process_race_rewards
 from services.race_rules import official_podium
 from services.race_presentation import classification_embed
 from services.race_snapshot import build_replay_snapshot, restore_replay_snapshot, restore_replay_rivalry_heat
@@ -409,42 +410,82 @@ class RacingCog(commands.Cog):
             )
             events, results, used_seed = engine.run()
             result_dicts = RaceEngine.results_to_dicts(results)
+            reward_embeds: list[discord.Embed] = []
 
             if persist:
-                replay_data = build_replay_snapshot(
-                    teams,
-                    laps=laps,
-                    initial_damage_by_team_id=initial_damage_by_team_id,
-                    weather_key=engine.weather.key,
-                    rng_state=engine.initial_rng_state,
-                    rivalry_heat_by_pair=active_rivalry_heat,
-                )
-                race_id = await self.bot.db.save_race(
-                    None,
-                    track_key,
-                    used_seed,
-                    RaceEngine.events_to_dicts(events),
-                    result_dicts,
-                    replay_data=replay_data,
-                )
+                async with self.bot.recovery_lock:
+                    checkpoint_token = await self.bot.recovery.create_race_checkpoint(
+                        {
+                            "track_key": track_key,
+                            "laps": laps,
+                            "team_ids": [int(team_id) for team_id in team_ids if team_id],
+                            "tournament_id": None,
+                            "seed": used_seed,
+                        }
+                    )
+                    replay_data = build_replay_snapshot(
+                        teams,
+                        laps=laps,
+                        initial_damage_by_team_id=initial_damage_by_team_id,
+                        weather_key=engine.weather.key,
+                        rng_state=engine.initial_rng_state,
+                        rivalry_heat_by_pair=active_rivalry_heat,
+                    )
+                    race_id = await self.bot.db.save_race(
+                        None,
+                        track_key,
+                        used_seed,
+                        RaceEngine.events_to_dicts(events),
+                        result_dicts,
+                        replay_data=replay_data,
+                    )
+                    self.bot.recovery.bind_race_checkpoint(checkpoint_token, race_id)
+                    await self.bot.recovery.mark_presentation(race_id, -1, "saved")
+                    result_title = f"{title} Race #{race_id} Results - {TRACKS[track_key].name}"
+                    try:
+                        reward_embeds = await process_race_rewards(
+                            self.bot.db,
+                            track_key,
+                            race_id,
+                            teams,
+                            results,
+                            events,
+                            engine.weather.name,
+                            result_title,
+                            laps,
+                        )
+                    except Exception:
+                        logging.exception("Post-race processing failed for race %s; restoring pre-race checkpoint", race_id)
+                        await self.bot.recovery.undo_last_race()
+                        raise
             else:
                 race_id = replay_source_id or 0
+                result_title = f"{title} Results - {TRACKS[track_key].name}"
 
             stream_error = None
             try:
-                await RaceStreamer(self.media, self.bot.settings.race_tick_seconds).stream(channel, events)
+                progress_callback = None
+                if persist:
+                    await self.bot.recovery.mark_presentation(race_id, -1, "streaming")
+
+                    async def progress_callback(index: int) -> None:
+                        await self.bot.recovery.mark_presentation(race_id, index, "streaming")
+
+                await RaceStreamer(self.media, self.bot.settings.race_tick_seconds).stream(
+                    channel,
+                    events,
+                    progress_callback=progress_callback,
+                )
+                if persist:
+                    await self.bot.recovery.mark_presentation(race_id, len(events) - 1, "complete")
             except (discord.HTTPException, OSError) as exc:
                 stream_error = exc
+                if persist:
+                    state = await self.bot.recovery.presentation_state(race_id)
+                    last_index = int(state["last_event_index"]) if state else -1
+                    await self.bot.recovery.mark_presentation(race_id, last_index, "interrupted")
                 logging.exception("Race event streaming failed for race %s", race_id)
 
-            if persist:
-                result_title = f"{title} Race #{race_id} Results - {TRACKS[track_key].name}"
-            else:
-                result_title = f"{title} Results - {TRACKS[track_key].name}"
-
-            # Reward/progression processing occurs inside send_race_report before any report
-            # messages are sent and is idempotent by race_id. Even if Discord delivery fails,
-            # the database cannot be left half-awarded.
             await send_race_report(
                 channel=channel,
                 db=self.bot.db,
@@ -459,7 +500,9 @@ class RacingCog(commands.Cog):
                 predictions=predictions,
                 rivalry_watch=None if persist else [],
                 final_embed=single_race_final_embed(results, events, result_title),
-                award_rewards=persist,
+                award_rewards=False,
+                reward_embeds_override=reward_embeds,
+                persisted_report=persist,
             )
             if stream_error:
                 try:

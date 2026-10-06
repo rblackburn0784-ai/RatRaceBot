@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 
 import discord
 
@@ -16,7 +17,14 @@ class RaceStreamer:
         self.tick_seconds = tick_seconds
         self.dynamic_gifs = DynamicRaceGifRenderer()
 
-    async def stream(self, channel: discord.abc.Messageable, events: list[RaceEvent]) -> None:
+    async def stream(
+        self,
+        channel: discord.abc.Messageable,
+        events: list[RaceEvent],
+        *,
+        start_index: int = 0,
+        progress_callback: Callable[[int], Awaitable[None]] | None = None,
+    ) -> None:
         await asyncio.to_thread(self.dynamic_gifs.cleanup_cache)
         total_laps = max((int((getattr(event, "context", {}) or {}).get("laps", event.lap)) for event in events), default=0)
         total_laps = max(total_laps, max((event.lap for event in events), default=0))
@@ -24,7 +32,9 @@ class RaceStreamer:
         last_phase: str | None = None
         leaderboard_posted: set[int] = set()
 
-        for event in events:
+        for event_index, event in enumerate(events):
+            if event_index < max(0, int(start_index)):
+                continue
             if event.lap > 0 and total_laps:
                 phase = phase_for_lap(event.lap, total_laps)
                 if phase != last_phase:
@@ -61,4 +71,6 @@ class RaceStreamer:
                     await channel.send(embed=board)
                     leaderboard_posted.add(event.lap)
 
+            if progress_callback:
+                await progress_callback(event_index)
             await asyncio.sleep(self.tick_seconds)

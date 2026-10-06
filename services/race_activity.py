@@ -72,3 +72,12 @@ class RaceActivityRegistry:
             return False
         async with self._lock:
             return team_id in self._active_team_ids or team_id in self._lobby_team_ids
+
+    async def snapshot(self) -> dict[str, object]:
+        async with self._lock:
+            return {
+                "active_team_ids": sorted(self._active_team_ids),
+                "lobby_team_ids": sorted(self._lobby_team_ids),
+                "active_tournament_ids": sorted(self._active_tournament_ids),
+                "active_race_count": 1 if self._active_team_ids else 0,
+            }
