@@ -48,7 +48,10 @@ class RecoveryCog(commands.Cog):
 
     @staticmethod
     def _confirm_message(action: str) -> str:
-        return f"This is a destructive recovery action. Run the command again with confirm:true to {action}."
+        return (
+            f"This is a destructive recovery action. Run the command again with confirm:true to {action}. "
+            "Checkpoint-based race recovery restores the whole pre-race database state, so later DB edits can also roll back; a safety backup is created first."
+        )
 
     def _media_summary(self) -> tuple[int, int]:
         self.media.load()
