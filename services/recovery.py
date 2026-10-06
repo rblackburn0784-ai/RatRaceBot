@@ -112,7 +112,7 @@ class RecoveryManager:
     def _checkpoint_meta_paths(self) -> list[Path]:
         if not self.checkpoint_dir.exists():
             return []
-        return sorted(self.checkpoint_dir.glob("*.sqlite3.json"), reverse=True)
+        return sorted(self.checkpoint_dir.glob("*.json"), reverse=True)
 
     def _load_checkpoint_meta(self, path: Path) -> dict[str, Any] | None:
         try:
@@ -189,6 +189,12 @@ class RecoveryManager:
                 self.db.conn.close()
                 self.db.conn = None
             self.database_path.parent.mkdir(parents=True, exist_ok=True)
+            for suffix in ("-wal", "-shm"):
+                sidecar = Path(str(self.database_path) + suffix)
+                try:
+                    sidecar.unlink()
+                except FileNotFoundError:
+                    pass
             shutil.copy2(source, self.database_path)
             self.db.conn = sqlite3.connect(self.database_path)
             self.db.conn.row_factory = sqlite3.Row
