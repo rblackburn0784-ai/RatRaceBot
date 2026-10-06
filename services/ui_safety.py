@@ -60,3 +60,19 @@ class OneShotReliableView(ReliableView):
             return False
         self._action_started = True
         return True
+
+
+class ReliableModal(discord.ui.Modal):
+    """Shared error boundary for Discord modal submissions."""
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        LOGGER.error(
+            "Modal submission failed in %s",
+            self.__class__.__name__,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        await safe_reply(
+            interaction,
+            "That form could not be completed. Nothing else was changed. Reopen the screen and try again.",
+            ephemeral=True,
+        )
