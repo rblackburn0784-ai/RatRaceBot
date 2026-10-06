@@ -109,11 +109,20 @@ class RecoveryCog(commands.Cog):
         balance_status = str(release_health.get("balance_lab", "UNKNOWN")).upper()
         balance_icon = "✅" if balance_status == "PASS" else "⚠️"
         test_status = str(release_health.get("tests", "UNKNOWN")).upper()
+        py312_status = str(release_health.get("python_312", test_status)).upper()
+        py313_status = str(release_health.get("python_313", test_status)).upper()
         interrupted = await self.bot.recovery.interrupted_races()
 
         release_version = str(release_health.get("version", "UNKNOWN"))
         release_version_ok = release_version == str(BOT_VERSION)
-        overall_ok = validation["ok"] and commands_ok and balance_status == "PASS" and test_status == "PASS" and release_version_ok
+        overall_ok = (
+            validation["ok"]
+            and commands_ok
+            and balance_status == "PASS"
+            and py312_status == "PASS"
+            and py313_status == "PASS"
+            and release_version_ok
+        )
         embed = discord.Embed(
             title="🛠️ Rat Rod Admin Health",
             description=f"v{BOT_VERSION} runtime diagnostics",
@@ -142,7 +151,9 @@ class RecoveryCog(commands.Cog):
         embed.add_field(
             name="Release Gate",
             value=(
-                f"Tests: **{test_status}**\nBalance Lab: {balance_icon} **{balance_status}**\n"
+                f"Tests Python 3.12: **{py312_status}**\n"
+                f"Tests Python 3.13: **{py313_status}**\n"
+                f"Balance Lab: {balance_icon} **{balance_status}**\n"
                 f"Database Tables Checked: **{validation.get('tables_checked', 0)}**\n"
                 f"Database Issues: **{len(validation['issues'])}** · Warnings: **{len(validation['warnings'])}**"
             ),
