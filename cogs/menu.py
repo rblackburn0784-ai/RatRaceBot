@@ -15,7 +15,7 @@ from services.scrutineering import scrutineering_embed
 from services.story import garage_summary_embed, hall_of_fame_embed, rivalries_embed, season_history_lines
 from services.world_state import build_world_snapshot, career_history_embed, gazette_archive_embed, season_awards_embed, world_hub_embed
 from services.views import PaginatedTextView
-from services.ui_safety import ReliableView
+from services.ui_safety import ReliableView, bind_view_to_interaction
 
 
 class TeamTitleSelect(discord.ui.Select):
@@ -46,6 +46,53 @@ class TeamTitleView(ReliableView):
             return True
         await interaction.response.send_message("This title picker belongs to another driver.", ephemeral=True)
         return False
+
+
+class CareerHistoryView(ReliableView):
+    def __init__(self, owner_id: int, team, career: dict[str, int], seasons, per_page: int = 4):
+        super().__init__(timeout=600)
+        self.owner_id = owner_id
+        self.team = team
+        self.career = career
+        self.seasons = list(seasons or [])
+        self.per_page = max(1, int(per_page))
+        self.page = 0
+        self._sync()
+
+    @property
+    def page_count(self) -> int:
+        return max(1, (len(self.seasons) + self.per_page - 1) // self.per_page)
+
+    def embed(self) -> discord.Embed:
+        return career_history_embed(
+            self.team,
+            self.career,
+            self.seasons,
+            page=self.page,
+            per_page=self.per_page,
+        )
+
+    def _sync(self) -> None:
+        self.previous.disabled = self.page <= 0
+        self.next.disabled = self.page >= self.page_count - 1
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message("This team-history control belongs to another driver.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = max(0, self.page - 1)
+        self._sync()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = min(self.page_count - 1, self.page + 1)
+        self._sync()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
 
 
 class MenuButton(discord.ui.Button):
@@ -262,14 +309,14 @@ class WorldHubView(ReliableView):
         team = await self._require_team(interaction)
         if not team:
             return
-        await interaction.response.send_message(
-            embed=career_history_embed(
-                team,
-                await self.cog.bot.db.team_career_summary(team.id),
-                await self.cog.bot.db.team_season_history(team.id),
-            ),
-            ephemeral=True,
+        view = CareerHistoryView(
+            interaction.user.id,
+            team,
+            await self.cog.bot.db.team_career_summary(team.id),
+            await self.cog.bot.db.team_season_history(team.id, limit=200),
         )
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        await bind_view_to_interaction(view, interaction)
 
     async def _handle_setups(self, interaction: discord.Interaction) -> None:
         team = await self._require_team(interaction)
@@ -633,9 +680,10 @@ class MainMenuView(ReliableView):
         )
 
     async def _handle_season_history(self, interaction: discord.Interaction) -> None:
-        rows = await self.cog.bot.db.season_history()
+        rows = await self.cog.bot.db.season_history(limit=100)
         view = PaginatedTextView(interaction.user.id, "Season History", season_history_lines(rows), per_page=8)
         await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        await bind_view_to_interaction(view, interaction)
 
     async def _handle_admin_panel(self, interaction: discord.Interaction) -> None:
         if not is_admin(interaction):
@@ -695,11 +743,13 @@ class MenuCog(commands.Cog):
 
     async def send_world_hub_for_team(self, interaction: discord.Interaction, team) -> None:
         snapshot = await build_world_snapshot(self.bot.db, team)
+        view = WorldHubView(self, interaction.user.id, int(team.id), str(snapshot["next_key"]))
         await interaction.response.send_message(
             embed=world_hub_embed(snapshot),
-            view=WorldHubView(self, interaction.user.id, int(team.id), str(snapshot["next_key"])),
+            view=view,
             ephemeral=True,
         )
+        await bind_view_to_interaction(view, interaction)
 
     @app_commands.command(name="world", description="Open your persistent Blacktop Racing World hub.")
     async def world(self, interaction: discord.Interaction):
@@ -726,6 +776,7 @@ class MenuCog(commands.Cog):
                 await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
             else:
                 await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            await bind_view_to_interaction(view, interaction)
             return
 
         view = MainMenuView(self, interaction.user.id, show_admin=show_admin)
@@ -743,6 +794,7 @@ class MenuCog(commands.Cog):
         else:
             embed.description = "Pick a button below to open a tool."
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await bind_view_to_interaction(view, interaction)
 
     @app_commands.command(name="status", description="Show your Rat Rod dashboard and current race-night status.")
     async def status(self, interaction: discord.Interaction):
