@@ -36,7 +36,7 @@ from services.story import season_history_lines
 from services.streamer import RaceStreamer
 from services.team_ids import parse_team_ids_csv
 from services.views import ConfirmView, PaginatedTextView
-from services.ui_safety import ReliableView
+from services.ui_safety import ReliableModal, ReliableView
 
 
 TOURNAMENT_LENGTHS = {
@@ -196,7 +196,7 @@ class TournamentWizardState:
         return TOURNAMENT_LENGTHS[self.length_key][0]
 
 
-class TournamentNameModal(discord.ui.Modal):
+class TournamentNameModal(ReliableModal):
     def __init__(self, wizard: "TournamentWizardView"):
         super().__init__(title="Tournament Name")
         self.wizard = wizard
