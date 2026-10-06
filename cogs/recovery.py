@@ -55,15 +55,16 @@ class RecoveryCog(commands.Cog):
 
     def _media_summary(self) -> tuple[int, int]:
         self.media.load()
-        registered = []
+        registered = set()
         for section in ("gifs", "audio"):
             for raw in self.media.data.get(section, {}).values():
-                registered.append(Path(raw))
-        direct = set(Path("assets/gifs").glob("*.gif")) | set(Path("assets/audio").glob("*"))
-        available_registered = sum(1 for path in registered if path.exists())
-        available = available_registered + len(direct)
-        total = len(registered) + len(direct)
-        return available, total
+                registered.add(Path(raw))
+        direct = set(Path("assets/gifs").glob("*.gif")) | {
+            path for path in Path("assets/audio").glob("*") if path.is_file()
+        }
+        expected = registered | direct
+        available = sum(1 for path in expected if path.exists())
+        return available, len(expected)
 
     @app_commands.command(name="admin_health", description="Admin: release-candidate health and diagnostics screen.")
     async def admin_health(self, interaction: discord.Interaction):
