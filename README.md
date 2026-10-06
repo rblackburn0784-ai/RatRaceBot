@@ -27,6 +27,32 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - Persistent 0–100 rivalry heat now follows actual overtakes, contact, illegal moves, title battles, stolen wins and explicitly attributed caused DNFs.
 - Dynamic Blacktop Gazette coverage pulls in championship position, rivalry story, scandal, pit-lane quote, sponsor angle and the next scheduled race.
 - Low-impact Racing World decisions create persistent paddock stories without hidden performance punishment.
+- `/world` opens the persistent **Blacktop Racing World** hub: garage, crew, setups, races, sponsors, rivalries, championship, Gazette archive, season awards and permanent team history.
+- Completed championships now freeze a permanent per-team season record so the same team builds a career across multiple seasons.
+- Shared UI error handling catches callback failures and gives drivers a useful response instead of a silent Discord interaction failure.
+
+
+## v0.5 Blacktop Racing World
+
+v0.5 turns the existing systems into one persistent game loop rather than adding a new power layer.
+
+**Create Team → Build Driver + Car → Hire Crew → Enter Garage → Prepare Track Setup → Race → XP / Reputation / Sponsors → Rivalries → Championship → Blacktop Gazette → Season Awards → Permanent Team History → Next Season**
+
+- `/world` opens a single persistent World Hub for the linked team. Admins can use the same hub against a selected team.
+- The hub shows garage readiness, saved setups, illegal-hardware risk, strain, XP/level/title, reputation, sponsor state, pending world stories, hottest rivalry, championship position and permanent career totals.
+- **Recommended Next** guides the player to the next useful action without automating choices.
+- Garage and track setup buttons open the real v0.4.5 garage/preset systems; crew, sponsors, race wizard and championship buttons reuse the existing live systems.
+- Blacktop World decisions now have safe **Choose A / Choose B** buttons. Repeat clicks report that the event was already resolved and never apply a second choice.
+- Completed championships write a frozen `team_season_history` snapshot for every entrant: final position, points, wins, podiums, fastest laps, awards and season summary.
+- Existing v0.4.x completed seasons are automatically backfilled into permanent team histories on upgrade.
+- Restoring a tournament removes its global and per-team completed-season snapshots so recovery never leaves contradictory history.
+- The Gazette archive surfaces recent saved races involving the selected team, while Team History and Season Awards provide persistent career views.
+- Every existing interactive View now sits behind a shared UI error boundary. Unexpected component errors are logged and acknowledged with an ephemeral retry message instead of silently failing.
+- Destructive confirmation controls are one-shot, and the existing race/tournament locks continue to protect concurrent or double-start interactions.
+- **Progression still unlocks choices, identity, setups, crew and sponsor strategy. It does not add automatic base-stat victory.**
+- The full regression suite and full deterministic Balance Lab remain mandatory release gates.
+
+See `BLACKTOP_WORLD_v0.5.md`, `TEST_MATRIX_v0.5.md`, and `UPGRADE_v0.5.md`.
 
 
 ## v0.4.9 polish, administration & release candidate
