@@ -9,7 +9,7 @@ from models.domain import Team
 from models.enums import CarArchetype, CrewSlot, PartSlot
 from models.stats import DriverStats
 from services.recovery import RecoveryManager
-from services.ui_safety import OneShotReliableView
+from services.ui_safety import OneShotReliableView, ReliableModal, ReliableView, safe_reply
 from services.world_state import build_world_snapshot, career_history_embed, world_hub_embed
 from storage.database import Database
 
@@ -153,6 +153,24 @@ class PersistentWorldDatabaseTests(unittest.IsolatedAsyncioTestCase):
         tournament = await self.db.get_tournament(tournament_id)
         self.assertEqual(tournament["status"], "open")
 
+
+    async def test_migration_tolerates_malformed_legacy_season_values(self):
+        tournament_id = await self.create_finished_season("Messy Legacy")
+        history = await self.db.season_history_entry(tournament_id)
+        standings = json.loads(history["standings_json"])
+        standings[0]["points"] = "not-a-number"
+        awards = json.loads(history["awards_json"])
+        awards.append({"team_id": "bad-id", "name": "Broken Legacy Award"})
+        await self.db.execute(
+            "UPDATE season_history SET standings_json=?, awards_json=? WHERE tournament_id=?",
+            (json.dumps(standings), json.dumps(awards), tournament_id),
+        )
+        await self.db.execute("DELETE FROM team_season_history WHERE tournament_id=?", (tournament_id,))
+        await self.db.init()
+        rows = await self.db.team_season_history(int(self.teams[0].id))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(int(rows[0]["points"]), 0)
+
     async def test_world_snapshot_guides_incomplete_team_to_garage(self):
         snapshot = await build_world_snapshot(self.db, self.teams[0])
         self.assertEqual(snapshot["next_key"], "garage")
@@ -203,6 +221,68 @@ class WorldUiSafetyTests(unittest.IsolatedAsyncioTestCase):
         view = OneShotReliableView(timeout=30)
         self.assertTrue(view.begin_once())
         self.assertFalse(view.begin_once())
+
+
+    async def test_safe_reply_acknowledges_initial_and_already_responded_interactions(self):
+        class FakeResponse:
+            def __init__(self):
+                self.done = False
+                self.messages = []
+            def is_done(self):
+                return self.done
+            async def send_message(self, message, ephemeral=True):
+                self.messages.append((message, ephemeral))
+                self.done = True
+
+        class FakeFollowup:
+            def __init__(self):
+                self.messages = []
+            async def send(self, message, ephemeral=True):
+                self.messages.append((message, ephemeral))
+
+        class FakeInteraction:
+            def __init__(self):
+                self.response = FakeResponse()
+                self.followup = FakeFollowup()
+                self.id = 1
+
+        interaction = FakeInteraction()
+        await safe_reply(interaction, "first")
+        self.assertEqual(interaction.response.messages[0][0], "first")
+        await safe_reply(interaction, "second")
+        self.assertEqual(interaction.followup.messages[0][0], "second")
+
+    async def test_view_and_modal_error_boundaries_acknowledge_failures(self):
+        class FakeResponse:
+            def __init__(self):
+                self.messages = []
+            def is_done(self):
+                return False
+            async def send_message(self, message, ephemeral=True):
+                self.messages.append((message, ephemeral))
+
+        class FakeFollowup:
+            async def send(self, message, ephemeral=True):
+                raise AssertionError("followup should not be used")
+
+        class FakeInteraction:
+            def __init__(self):
+                self.response = FakeResponse()
+                self.followup = FakeFollowup()
+                self.id = 2
+
+        class FakeItem:
+            custom_id = "test"
+            label = "Test"
+
+        interaction = FakeInteraction()
+        await ReliableView(timeout=30).on_error(interaction, RuntimeError("view boom"), FakeItem())
+        self.assertTrue(interaction.response.messages)
+
+        interaction = FakeInteraction()
+        modal = ReliableModal(title="Safety Test")
+        await modal.on_error(interaction, RuntimeError("modal boom"))
+        self.assertTrue(interaction.response.messages)
 
     async def test_all_project_views_and_modals_use_shared_error_boundaries(self):
         root = Path(__file__).resolve().parents[1]
