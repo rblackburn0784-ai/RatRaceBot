@@ -391,6 +391,63 @@ class Database:
             conn.execute("ALTER TABLE season_history ADD COLUMN awards_json TEXT NOT NULL DEFAULT '[]'")
         if "summary_json" not in season_columns:
             conn.execute("ALTER TABLE season_history ADD COLUMN summary_json TEXT NOT NULL DEFAULT '{}'")
+
+        # v0.5: preserve every completed pre-v0.5 season as permanent per-team
+        # history. This is idempotent and intentionally uses the frozen season
+        # snapshot rather than today's mutable team profile.
+        legacy_seasons = conn.execute(
+            """
+            SELECT tournament_id, tournament_name, standings_json, awards_json,
+                   summary_json, completed_at
+            FROM season_history
+            ORDER BY tournament_id
+            """
+        ).fetchall()
+        for season in legacy_seasons:
+            try:
+                standings = json.loads(season["standings_json"] or "[]")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                standings = []
+            try:
+                awards = json.loads(season["awards_json"] or "[]")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                awards = []
+            if not isinstance(standings, list):
+                continue
+            for final_position, standing in enumerate(standings, start=1):
+                try:
+                    team_id = int(standing.get("team_id") or 0)
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                if team_id <= 0:
+                    continue
+                team_awards = [
+                    award for award in awards
+                    if isinstance(award, dict) and int(award.get("team_id") or 0) == team_id
+                ] if isinstance(awards, list) else []
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO team_season_history(
+                        team_id, tournament_id, season_name, final_position,
+                        points, wins, podiums, fastest_laps, awards_json,
+                        summary_json, completed_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        team_id,
+                        int(season["tournament_id"]),
+                        str(season["tournament_name"]),
+                        final_position,
+                        int(standing.get("points") or 0),
+                        int(standing.get("wins") or 0),
+                        int(standing.get("podiums") or 0),
+                        int(standing.get("fastest_laps") or 0),
+                        json.dumps(team_awards),
+                        str(season["summary_json"] or "{}"),
+                        str(season["completed_at"]),
+                    ),
+                )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS team_progress (
