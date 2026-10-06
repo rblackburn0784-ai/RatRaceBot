@@ -97,7 +97,7 @@ class RacingWorldCoreTests(unittest.TestCase):
         self.assertEqual(update["stolen_wins"], 1)
         self.assertEqual(update["close_finishes"], 1)
         self.assertEqual(update["heat"], 19)
-        self.assertEqual(update["last_incident"], "championship battle")
+        self.assertEqual(update["last_incident"], "stolen win")
 
     def test_explicitly_attributed_dnf_builds_large_rivalry_signal(self):
         first = car(1, "Rust Kings")
