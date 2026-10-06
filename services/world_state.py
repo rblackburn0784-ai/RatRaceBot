@@ -71,12 +71,13 @@ async def build_world_snapshot(db, team) -> dict[str, Any]:
         "strain": BuildService.build_strain(team),
     }
 
-    next_action = "Open the garage and finish the car build."
-    next_key = "garage"
-    if len(installed_slots) == len(PartSlot) and len(assigned_crew) < len(CrewSlot):
+    if len(installed_slots) < len(PartSlot):
+        next_action = "Open the garage and finish the car build."
+        next_key = "garage"
+    elif len(assigned_crew) < len(CrewSlot):
         next_action = "Hire or assign the remaining pit crew positions."
         next_key = "crew"
-    elif len(installed_slots) == len(PartSlot) and len(assigned_crew) == len(CrewSlot) and not setups:
+    elif not setups:
         next_action = "Save a track setup so the garage is ready for different venues."
         next_key = "setups"
     elif pending_events:
