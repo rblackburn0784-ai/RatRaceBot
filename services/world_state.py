@@ -5,7 +5,7 @@ from typing import Any
 
 import discord
 
-from data.defaults import PARTS, TRACKS
+from data.defaults import CREW_MEMBERS, PARTS, TRACKS
 from models.enums import CrewSlot, PartSlot
 from services.builds import BuildService
 from services.progression import level_for_xp, next_unlock
@@ -42,7 +42,11 @@ async def build_world_snapshot(db, team) -> dict[str, Any]:
     level = level_for_xp(xp)
     title = str(progress["cosmetic_title"]) if progress else "Garage Rookie"
     installed_slots = {PARTS[key].slot for key in team.parts if key in PARTS}
-    assigned_crew = {slot for slot, key in team.crew.items() if key and slot in {item.value for item in CrewSlot}}
+    assigned_crew = {
+        slot
+        for slot, key in team.crew.items()
+        if key in CREW_MEMBERS and CREW_MEMBERS[key].slot.value == slot
+    }
     offered = [row for row in sponsor_offers if str(row["status"]) == "offered"]
     active_sponsor = sponsor_by_key(team.active_sponsor_key)
 
