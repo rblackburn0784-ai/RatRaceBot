@@ -91,6 +91,9 @@ async def build_world_snapshot(db, team) -> dict[str, Any]:
         track_name = TRACKS[track_key].name if track_key in TRACKS else track_key
         next_action = f"Prepare for championship round {race_number} at {track_name}."
         next_key = "championship"
+    elif int(career.get("seasons", 0)) > 0 and tournament_state is None:
+        next_action = "The last season is permanently archived. Move into the next season when the championship opens."
+        next_key = "next_season"
     else:
         next_action = "The team is ready. Pick a race and put the setup to work."
         next_key = "race"
