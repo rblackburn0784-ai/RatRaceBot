@@ -13,6 +13,7 @@ from services.menu_cards import MAIN_MENU_BACKGROUND, render_main_menu_card
 from services.scrutineering import scrutineering_embed
 from services.story import garage_summary_embed, hall_of_fame_embed, rivalries_embed, season_history_lines
 from services.views import PaginatedTextView
+from services.ui_safety import ReliableView
 
 
 class TeamTitleSelect(discord.ui.Select):
@@ -30,7 +31,7 @@ class TeamTitleSelect(discord.ui.Select):
         await interaction.response.edit_message(content=f"Set **{self.menu_view.team.name}** title to **{title}**.", view=None)
 
 
-class TeamTitleView(discord.ui.View):
+class TeamTitleView(ReliableView):
     def __init__(self, cog: "MenuCog", owner_id: int, team, titles: list[str]):
         super().__init__(timeout=180)
         self.cog = cog
@@ -58,7 +59,7 @@ class MenuButton(discord.ui.Button):
         await view.handle_button(interaction, self.key)
 
 
-class StartMenuView(discord.ui.View):
+class StartMenuView(ReliableView):
     def __init__(self, cog: "MenuCog", owner_id: int):
         super().__init__(timeout=600)
         self.cog = cog
@@ -80,7 +81,7 @@ class StartMenuView(discord.ui.View):
         await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
 
-class MainMenuView(discord.ui.View):
+class MainMenuView(ReliableView):
     def __init__(self, cog: "MenuCog", owner_id: int, show_admin: bool):
         super().__init__(timeout=600)
         self.cog = cog
