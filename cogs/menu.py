@@ -12,6 +12,7 @@ from services.engagement import available_titles_for_level, level_for_xp, progre
 from services.menu_cards import MAIN_MENU_BACKGROUND, render_main_menu_card
 from services.scrutineering import scrutineering_embed
 from services.story import garage_summary_embed, hall_of_fame_embed, rivalries_embed, season_history_lines
+from services.world_state import build_world_snapshot, career_history_embed, gazette_archive_embed, season_awards_embed, world_hub_embed
 from services.views import PaginatedTextView
 from services.ui_safety import ReliableView
 
@@ -81,12 +82,227 @@ class StartMenuView(ReliableView):
         await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
 
+class WorldActionButton(discord.ui.Button):
+    def __init__(self, key: str, label: str, row: int, style: discord.ButtonStyle = discord.ButtonStyle.secondary):
+        super().__init__(label=label, row=row, style=style)
+        self.key = key
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, WorldHubView):
+            await interaction.response.send_message("This World Hub is no longer active. Use `/world` to reopen it.", ephemeral=True)
+            return
+        await view.handle_action(interaction, self.key)
+
+
+class WorldHubView(ReliableView):
+    def __init__(self, cog: "MenuCog", owner_id: int, team_id: int, next_key: str):
+        super().__init__(timeout=900)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.team_id = int(team_id)
+        self.next_key = next_key
+        buttons = [
+            ("garage", "Garage", 0, discord.ButtonStyle.primary),
+            ("crew", "Hire Crew", 0, discord.ButtonStyle.primary),
+            ("race", "Race", 0, discord.ButtonStyle.danger),
+            ("progress", "XP / Reputation", 0, discord.ButtonStyle.secondary),
+            ("championship", "Championship", 0, discord.ButtonStyle.success),
+            ("sponsors", "Sponsors", 1, discord.ButtonStyle.secondary),
+            ("rivalries", "Rivalries", 1, discord.ButtonStyle.secondary),
+            ("world_events", "World Stories", 1, discord.ButtonStyle.secondary),
+            ("gazette", "Gazette", 1, discord.ButtonStyle.secondary),
+            ("history", "Team History", 1, discord.ButtonStyle.secondary),
+            ("awards", "Season Awards", 2, discord.ButtonStyle.secondary),
+            ("recommended", "▶ Recommended Next", 2, discord.ButtonStyle.success),
+            ("refresh", "Refresh World", 2, discord.ButtonStyle.primary),
+            ("main_menu", "Main Menu", 2, discord.ButtonStyle.secondary),
+        ]
+        for key, label, row, style in buttons:
+            self.add_item(WorldActionButton(key, label, row, style))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message("This Blacktop World belongs to another driver. Use `/world` for your own.", ephemeral=True)
+        return False
+
+    async def team(self):
+        return await self.cog.bot.db.get_team(self.team_id)
+
+    async def handle_action(self, interaction: discord.Interaction, key: str) -> None:
+        if key == "recommended":
+            key = self.next_key
+        handler = getattr(self, f"_handle_{key}", None)
+        if not handler:
+            await interaction.response.send_message("That World Hub action is unavailable. Refresh the hub and try again.", ephemeral=True)
+            return
+        await handler(interaction)
+
+    async def _require_team(self, interaction: discord.Interaction):
+        team = await self.team()
+        if team:
+            return team
+        await interaction.response.send_message("That team no longer exists. Reopen `/menu` and choose a current team.", ephemeral=True)
+        return None
+
+    async def _handle_garage(self, interaction: discord.Interaction) -> None:
+        team = await self._require_team(interaction)
+        teams_cog = self.cog.teams_cog()
+        if not team or not teams_cog:
+            if team and not teams_cog:
+                await interaction.response.send_message("Garage tools are not loaded.", ephemeral=True)
+            return
+        profile = await self.cog.bot.db.team_profile(team.id)
+        rivalries = await self.cog.bot.db.team_rivalries(team.id, limit=1)
+        locked = await self.cog.bot.db.team_in_open_tournament(team.id)
+        await interaction.response.send_message(
+            embed=garage_summary_embed(team, profile, rivalries, locked),
+            view=MyTeamActionsView(teams_cog, interaction.user.id, team),
+            ephemeral=True,
+        )
+
+    async def _handle_crew(self, interaction: discord.Interaction) -> None:
+        team = await self._require_team(interaction)
+        teams_cog = self.cog.teams_cog()
+        if not team or not teams_cog:
+            if team and not teams_cog:
+                await interaction.response.send_message("Pit crew tools are not loaded.", ephemeral=True)
+            return
+        progress = await self.cog.bot.db.team_progress(team.id)
+        level = level_for_xp(int(progress["xp"]) if progress else 0)
+        view = PitCrewWizardView(teams_cog, interaction.user.id, team, level)
+        file = view.crew_file()
+        if file:
+            await interaction.response.send_message(embed=view.embed(True), file=file, view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=view.embed(False), view=view, ephemeral=True)
+
+    async def _handle_race(self, interaction: discord.Interaction) -> None:
+        team = await self._require_team(interaction)
+        racing_cog = self.cog.racing_cog()
+        if not team or not racing_cog:
+            if team and not racing_cog:
+                await interaction.response.send_message("Race tools are not loaded.", ephemeral=True)
+            return
+        if await self.cog.bot.race_activity.is_team_busy(int(team.id)):
+            await interaction.response.send_message("That team is already in an active race or race lobby.", ephemeral=True)
+            return
+        view = RaceWizardView(racing_cog, interaction.user.id, team)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+    async def _handle_progress(self, interaction: discord.Interaction) -> None:
+        team = await self._require_team(interaction)
+        if not team:
+            return
+        await interaction.response.send_message(
+            embed=progress_embed(
+                team,
+                await self.cog.bot.db.team_progress(team.id),
+                await self.cog.bot.db.team_achievements(team.id),
+                await self.cog.bot.db.team_sponsor_offers(team.id),
+                await self.cog.bot.db.team_fatigue(team.id),
+            ),
+            ephemeral=True,
+        )
+
+    async def _handle_championship(self, interaction: discord.Interaction) -> None:
+        tournament = await self.cog.bot.db.current_tournament()
+        if not tournament:
+            recent = await self.cog.bot.db.list_tournaments(include_closed=True, limit=1)
+            tournament = recent[0] if recent else None
+        if not tournament:
+            await interaction.response.send_message("No championship exists yet. An admin can create the next season from the Tournament Wizard.", ephemeral=True)
+            return
+        tid = int(tournament["id"])
+        await interaction.response.send_message(
+            embed=championship_hub_embed(
+                tournament,
+                await self.cog.bot.db.standings(tid),
+                await self.cog.bot.db.tournament_schedule(tid),
+                await self.cog.bot.db.tournament_races(tid),
+                await self.cog.bot.db.tournament_rivalries(tid, limit=5),
+            ),
+            ephemeral=True,
+        )
+
+    async def _handle_sponsors(self, interaction: discord.Interaction) -> None:
+        team = await self._require_team(interaction)
+        teams_cog = self.cog.teams_cog()
+        if not team:
+            return
+        offers = await self.cog.bot.db.team_sponsor_offers(team.id, limit=8)
+        view = SponsorOfferActionView(teams_cog, interaction.user.id, team, offers) if teams_cog else None
+        await interaction.response.send_message(embed=sponsor_offers_embed(team, offers), view=view, ephemeral=True)
+
+    async def _handle_rivalries(self, interaction: discord.Interaction) -> None:
+        team = await self._require_team(interaction)
+        if not team:
+            return
+        await interaction.response.send_message(
+            embed=rivalries_embed(team, await self.cog.bot.db.team_rivalries(team.id)),
+            ephemeral=True,
+        )
+
+    async def _handle_world_events(self, interaction: discord.Interaction) -> None:
+        team = await self._require_team(interaction)
+        world_cog = self.cog.bot.get_cog("RacingWorldCog")
+        if not team or not world_cog:
+            if team and not world_cog:
+                await interaction.response.send_message("Blacktop World story tools are not loaded.", ephemeral=True)
+            return
+        await world_cog.send_world_events(interaction, team)
+
+    async def _handle_gazette(self, interaction: discord.Interaction) -> None:
+        team = await self._require_team(interaction)
+        if team:
+            await interaction.response.send_message(embed=await gazette_archive_embed(self.cog.bot.db, team), ephemeral=True)
+
+    async def _handle_history(self, interaction: discord.Interaction) -> None:
+        team = await self._require_team(interaction)
+        if not team:
+            return
+        await interaction.response.send_message(
+            embed=career_history_embed(
+                team,
+                await self.cog.bot.db.team_career_summary(team.id),
+                await self.cog.bot.db.team_season_history(team.id),
+            ),
+            ephemeral=True,
+        )
+
+    async def _handle_awards(self, interaction: discord.Interaction) -> None:
+        team = await self._require_team(interaction)
+        if team:
+            await interaction.response.send_message(
+                embed=season_awards_embed(team, await self.cog.bot.db.team_season_history(team.id)),
+                ephemeral=True,
+            )
+
+    async def _handle_refresh(self, interaction: discord.Interaction) -> None:
+        team = await self._require_team(interaction)
+        if not team:
+            return
+        snapshot = await build_world_snapshot(self.cog.bot.db, team)
+        self.next_key = str(snapshot["next_key"])
+        await interaction.response.edit_message(embed=world_hub_embed(snapshot), view=self)
+
+    async def _handle_main_menu(self, interaction: discord.Interaction) -> None:
+        view = MainMenuView(self.cog, interaction.user.id, show_admin=is_admin(interaction))
+        await interaction.response.send_message(
+            embed=discord.Embed(title="Rat Rod Racing Bot", description="Main menu"),
+            view=view,
+            ephemeral=True,
+        )
+
+
 class MainMenuView(ReliableView):
     def __init__(self, cog: "MenuCog", owner_id: int, show_admin: bool):
         super().__init__(timeout=600)
         self.cog = cog
         self.owner_id = owner_id
         buttons = [
+            ("world_hub", "🌎 Blacktop World", 0, discord.ButtonStyle.success),
             ("team_wizard", "Create Team Wizard", 0, discord.ButtonStyle.success),
             ("team_edit_wizard", "Team Edit Wizard", 0, discord.ButtonStyle.primary),
             ("pit_crew_wizard", "Pit Crew Wizard", 0, discord.ButtonStyle.primary),
@@ -143,6 +359,12 @@ class MainMenuView(ReliableView):
             view=TeamSelectView(admin_cog, interaction.user.id, teams, callback, "Choose a team"),
             ephemeral=True,
         )
+
+    async def _handle_world_hub(self, interaction: discord.Interaction) -> None:
+        async def open_world(select_interaction: discord.Interaction, team):
+            await self.cog.send_world_hub_for_team(select_interaction, team)
+
+        await self._with_team(interaction, open_world)
 
     async def _handle_team_wizard(self, interaction: discord.Interaction) -> None:
         teams_cog = self.cog.teams_cog()
@@ -401,6 +623,19 @@ class MenuCog(commands.Cog):
             return team
         await interaction.response.send_message("You do not have a team yet. Use Create Team Wizard.", ephemeral=True)
         return None
+
+    async def send_world_hub_for_team(self, interaction: discord.Interaction, team) -> None:
+        snapshot = await build_world_snapshot(self.bot.db, team)
+        await interaction.response.send_message(
+            embed=world_hub_embed(snapshot),
+            view=WorldHubView(self, interaction.user.id, int(team.id), str(snapshot["next_key"])),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="world", description="Open your persistent Blacktop Racing World hub.")
+    async def world(self, interaction: discord.Interaction):
+        view = MainMenuView(self, interaction.user.id, show_admin=is_admin(interaction))
+        await view._handle_world_hub(interaction)
 
     @app_commands.command(name="menu", description="Open the Rat Rod Racing Bot main menu.")
     async def menu(self, interaction: discord.Interaction):
