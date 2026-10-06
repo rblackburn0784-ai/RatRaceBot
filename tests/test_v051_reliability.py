@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import discord
 from discord import app_commands
 
 from cogs.recovery import EXPECTED_SLASH_COMMANDS
@@ -164,7 +165,7 @@ class MediaAndUiReliabilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bound_view_disables_controls_on_timeout(self):
         class DummyView(ReliableView):
-            @__import__("discord").ui.button(label="Click")
+            @discord.ui.button(label="Click")
             async def click(self, interaction, button):
                 pass
 
