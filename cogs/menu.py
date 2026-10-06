@@ -761,20 +761,19 @@ class MenuCog(commands.Cog):
     async def version(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="Rat Rod Racing Bot",
-            description=f"Version {BOT_VERSION} - progression, sponsors & team identity",
+            description=f"Version {BOT_VERSION} — Blacktop Racing World",
             color=discord.Color.dark_gold(),
         )
         embed.add_field(
-            name="Recent Changes",
+            name="v0.5",
             value=(
-                "Team XP now unlocks choices and identity rather than permanent speed\n"
-                "Garage preset capacity expands from 3 to 5 as the team levels up\n"
-                "Liveries, emblems, garage decor and a custom Level 3 race intro are selectable\n"
-                "Level 4 opens the specialist crew shortlist; existing assignments are grandfathered\n"
-                "Five sponsor contracts offer small situational benefits paired with real drawbacks\n"
-                "Only one sponsor can be active at a time; contracts can be ended from Sponsor Paddock\n"
-                "Level-ups and established-team Gazette recognition are surfaced after races\n"
-                "v0.4.3 balance, v0.4.4 presentation and v0.4.5 garage gameplay remain protected"
+                "Persistent `/world` hub connects the full team → garage → setup → race → championship loop\n"
+                "Completed seasons now become permanent per-team career history and awards\n"
+                "Existing completed seasons are backfilled automatically during upgrade\n"
+                "World-story decisions have safe A/B buttons with duplicate-click protection\n"
+                "Shared UI error handling prevents silent failed interactions across the bot\n"
+                "Progression still expands choices and identity rather than granting automatic victory\n"
+                "Full regression tests and the full Balance Lab remain release gates"
             ),
             inline=False,
         )
