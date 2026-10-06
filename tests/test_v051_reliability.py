@@ -103,6 +103,20 @@ class SeasonReliabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("Multiple active championships" in item for item in report["issues"]))
 
 
+    async def test_empty_legacy_season_can_be_cancelled_to_repair_duplicate_open_state(self):
+        first = await self.db.execute("INSERT INTO tournaments(name, status) VALUES ('Legacy A', 'open')")
+        second = await self.db.execute("INSERT INTO tournaments(name, status) VALUES ('Legacy B', 'open')")
+        outcome = await self.db.close_tournament(int(first.lastrowid))
+        self.assertEqual(outcome, "cancelled")
+        first_row = await self.db.get_tournament(int(first.lastrowid))
+        second_row = await self.db.get_tournament(int(second.lastrowid))
+        self.assertEqual(first_row["status"], "cancelled")
+        self.assertEqual(second_row["status"], "open")
+        self.assertIsNone(await self.db.season_history_entry(int(first.lastrowid)))
+        report = await self.recovery.validate_database()
+        self.assertTrue(report["ok"], report)
+
+
 class CommandHealthTests(unittest.IsolatedAsyncioTestCase):
     async def test_expected_command_manifest_matches_all_decorated_commands(self):
         root = Path(__file__).resolve().parents[1]
