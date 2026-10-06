@@ -417,7 +417,7 @@ class TeamWizardView(ReliableView):
         for item in self.children:
             item.disabled = True
         await interaction.response.edit_message(
-            content=f"Created team **{team.name}** as ID `{team_id}`.",
+            content=f"Created team **{team.name}** as ID `{team_id}`. Next: open `/world` to enter the Blacktop Racing World.",
             embed=Embeds.team_sheet(team),
             view=self,
         )
