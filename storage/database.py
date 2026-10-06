@@ -747,9 +747,88 @@ class Database:
             (team_id, setup_name, json.dumps(parts)),
         )
 
+    @staticmethod
+    def _ensure_no_open_tournament_conn(conn: sqlite3.Connection) -> None:
+        current = conn.execute(
+            "SELECT id, name FROM tournaments WHERE status='open' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if current:
+            raise ValueError(
+                f"Only one championship can be active at a time. "
+                f"Close **{current['name']}** (#{int(current['id'])}) before starting another season."
+            )
+
     async def create_tournament(self, name: str) -> int:
-        cur = await self.execute("INSERT INTO tournaments(name) VALUES (?)", (name,))
-        return int(cur.lastrowid)
+        clean_name = str(name).strip()
+        if not clean_name:
+            raise ValueError("Tournament name cannot be empty.")
+        async with self.lock:
+            conn = self._require()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                self._ensure_no_open_tournament_conn(conn)
+                cur = conn.execute("INSERT INTO tournaments(name) VALUES (?)", (clean_name,))
+                tournament_id = int(cur.lastrowid)
+                conn.commit()
+                return tournament_id
+            except Exception:
+                conn.rollback()
+                raise
+
+    async def create_tournament_with_grid(
+        self,
+        name: str,
+        team_ids: list[int],
+        track_keys: list[str],
+    ) -> int:
+        """Atomically create one active season, its 10-team grid and schedule."""
+        clean_name = str(name).strip()
+        normalized_ids = [int(team_id) for team_id in team_ids]
+        normalized_tracks = [str(track_key).strip() for track_key in track_keys]
+        if not clean_name:
+            raise ValueError("Tournament name cannot be empty.")
+        if len(normalized_ids) != 10 or len(set(normalized_ids)) != 10:
+            raise ValueError("A championship must be created with exactly 10 unique teams.")
+        if not normalized_tracks or any(not track_key for track_key in normalized_tracks):
+            raise ValueError("A championship schedule must contain at least one valid track.")
+
+        async with self.lock:
+            conn = self._require()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                self._ensure_no_open_tournament_conn(conn)
+
+                placeholders = ",".join("?" for _ in normalized_ids)
+                existing_rows = conn.execute(
+                    f"SELECT id FROM teams WHERE id IN ({placeholders})",
+                    tuple(normalized_ids),
+                ).fetchall()
+                existing_ids = {int(row["id"]) for row in existing_rows}
+                missing = [team_id for team_id in normalized_ids if team_id not in existing_ids]
+                if missing:
+                    raise ValueError(
+                        "Tournament not created because these teams no longer exist: "
+                        + ", ".join(str(team_id) for team_id in missing)
+                    )
+
+                cur = conn.execute("INSERT INTO tournaments(name) VALUES (?)", (clean_name,))
+                tournament_id = int(cur.lastrowid)
+                conn.executemany(
+                    "INSERT INTO tournament_teams(tournament_id, team_id) VALUES (?, ?)",
+                    [(tournament_id, team_id) for team_id in normalized_ids],
+                )
+                conn.executemany(
+                    "INSERT INTO tournament_schedule(tournament_id, race_number, track_key) VALUES (?, ?, ?)",
+                    [
+                        (tournament_id, race_number, track_key)
+                        for race_number, track_key in enumerate(normalized_tracks, start=1)
+                    ],
+                )
+                conn.commit()
+                return tournament_id
+            except Exception:
+                conn.rollback()
+                raise
 
     @staticmethod
     def _require_open_tournament_conn(conn: sqlite3.Connection, tournament_id: int) -> sqlite3.Row:
