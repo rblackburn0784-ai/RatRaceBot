@@ -1,5 +1,6 @@
-Rat Rod Racing Bot v0.5 — Blacktop Racing World
+Rat Rod Racing Bot v0.5.1 — World Reliability Patch
 Release date: 2026-10-06
 
-Persistent racing-world release. Progression expands choices, identity and strategy without granting automatic victory.
-See UPGRADE_v0.5.md before replacing an existing installation.
+Reliability-only update for the Blacktop Racing World: single-season enforcement, atomic tournament creation,
+diagnostics, playable race audio attachments, stale-view cleanup, career-history pagination and Python 3.13 CI.
+See UPGRADE_v0.5.1.md before replacing an existing installation.
