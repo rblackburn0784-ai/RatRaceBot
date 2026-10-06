@@ -976,8 +976,23 @@ class Database:
         if count != 10:
             raise ValueError(f"Tournament races require exactly 10 entered teams; this tournament has {count}.")
 
-    async def close_tournament(self, tournament_id: int) -> None:
-        await self.finalize_tournament(tournament_id)
+    async def close_tournament(self, tournament_id: int) -> str:
+        """Close a raced season, or safely cancel an empty legacy/partial season."""
+        if await self.tournament_championship_race_count(tournament_id) > 0:
+            await self.finalize_tournament(tournament_id)
+            return "closed"
+
+        async with self.lock:
+            conn = self._require()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                tournament = self._require_open_tournament_conn(conn, tournament_id)
+                conn.execute("UPDATE tournaments SET status='cancelled' WHERE id=?", (int(tournament_id),))
+                conn.commit()
+                return "cancelled"
+            except Exception:
+                conn.rollback()
+                raise
 
     async def tournament_team_ids(self, tournament_id: int) -> list[int]:
         rows = await self.fetchall("SELECT team_id FROM tournament_teams WHERE tournament_id=? ORDER BY team_id", (tournament_id,))
