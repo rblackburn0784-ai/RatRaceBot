@@ -57,6 +57,7 @@ def build_replay_snapshot(
     initial_damage_by_team_id: dict[int, int] | None = None,
     weather_key: str | None = None,
     rng_state: tuple | None = None,
+    rivalry_heat_by_pair: dict[tuple[int, int], int] | None = None,
 ) -> dict[str, Any]:
     return {
         "version": REPLAY_SNAPSHOT_VERSION,
@@ -68,6 +69,10 @@ def build_replay_snapshot(
         },
         "weather_key": weather_key,
         "rng_state": rng_state,
+        "rivalry_heat_by_pair": {
+            f"{min(int(first), int(second))}:{max(int(first), int(second))}": min(100, max(0, int(heat)))
+            for (first, second), heat in (rivalry_heat_by_pair or {}).items()
+        },
     }
 
 
@@ -93,3 +98,15 @@ def restore_replay_snapshot(
     weather_key = str(data["weather_key"]) if data.get("weather_key") else None
     rng_state = _nested_tuple(data.get("rng_state")) if data.get("rng_state") is not None else None
     return teams, laps, initial_damage, weather_key, rng_state
+
+
+
+def restore_replay_rivalry_heat(data: dict[str, Any]) -> dict[tuple[int, int], int]:
+    restored: dict[tuple[int, int], int] = {}
+    for raw_key, raw_heat in dict(data.get("rivalry_heat_by_pair", {})).items():
+        try:
+            first, second = (int(value) for value in str(raw_key).split(":", 1))
+            restored[(min(first, second), max(first, second))] = min(100, max(0, int(raw_heat)))
+        except (TypeError, ValueError):
+            continue
+    return restored
