@@ -25,6 +25,7 @@ from services.scrutineering import scrutineering_embed
 from services.streamer import RaceStreamer
 from services.team_ids import parse_team_ids_csv
 from services.views import ConfirmView, PaginatedTextView
+from services.ui_safety import ReliableView
 
 TRACK_CHOICES = [
     app_commands.Choice(name=f"{track.name} ({key})", value=key)
@@ -149,7 +150,7 @@ class RaceModeSelect(discord.ui.Select):
         await self.wizard.refresh(interaction)
 
 
-class RaceWizardView(discord.ui.View):
+class RaceWizardView(ReliableView):
     def __init__(self, cog: "RacingCog", owner_id: int, owner_team: Team):
         super().__init__(timeout=600)
         self.cog = cog
@@ -220,7 +221,7 @@ class RaceWizardView(discord.ui.View):
         asyncio.create_task(lobby.finish_after_delay())
 
 
-class PlayerRaceLobbyView(discord.ui.View):
+class PlayerRaceLobbyView(ReliableView):
     def __init__(self, cog: "RacingCog", host_user_id: int, track_key: str, laps: int, mode: str, initial_team: Team):
         super().__init__(timeout=PLAYER_LOBBY_SECONDS + 30)
         self.cog = cog
