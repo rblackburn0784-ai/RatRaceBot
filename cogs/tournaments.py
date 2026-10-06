@@ -36,7 +36,7 @@ from services.story import season_history_lines
 from services.streamer import RaceStreamer
 from services.team_ids import parse_team_ids_csv
 from services.views import ConfirmView, PaginatedTextView
-from services.ui_safety import ReliableModal, ReliableView
+from services.ui_safety import OneShotReliableView, ReliableModal, ReliableView, safe_reply
 
 
 TOURNAMENT_LENGTHS = {
@@ -271,7 +271,7 @@ class TournamentLengthSelect(discord.ui.Select):
         await self.wizard.refresh(interaction)
 
 
-class TournamentWizardView(ReliableView):
+class TournamentWizardView(OneShotReliableView):
     def __init__(self, cog: "TournamentsCog", owner_id: int, teams):
         super().__init__(timeout=600)
         self.cog = cog
@@ -336,19 +336,22 @@ class TournamentWizardView(ReliableView):
         if not self.state.ready:
             await interaction.response.send_message("Name the tournament and choose exactly 10 teams first.", ephemeral=True)
             return
-
-        try:
-            tournament_id = await self.cog.bot.db.create_tournament(self.state.name or "")
-            for team_id in self.state.selected_team_ids:
-                await self.cog.bot.db.add_team_to_tournament(tournament_id, team_id)
-            await self.cog.bot.db.set_tournament_schedule(tournament_id, self.state.track_keys)
-        except Exception as exc:
-            await interaction.response.send_message(f"Tournament not created: {exc}", ephemeral=True)
+        if not self.begin_once():
+            await safe_reply(interaction, "Tournament creation is already being processed. No duplicate season was created.")
             return
 
-        for item in self.children:
-            item.disabled = True
+        try:
+            tournament_id = await self.cog.bot.db.create_tournament_with_grid(
+                self.state.name or "",
+                self.state.selected_team_ids,
+                self.state.track_keys,
+            )
+        except Exception as exc:
+            self._action_started = False
+            await safe_reply(interaction, f"Tournament not created: {exc}")
+            return
 
+        self._disable()
         await interaction.response.edit_message(
             content=f"Created {self.state.length_label.lower()} tournament **{self.state.name}** as ID `{tournament_id}`.",
             embed=self.embed(),
@@ -674,6 +677,13 @@ class TournamentsCog(commands.Cog):
     @app_commands.command(name="tournament_wizard", description="Create a tournament with 10 teams and a short, medium, or long track schedule.")
     async def tournament_wizard(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
+        current = await self.bot.db.current_tournament()
+        if current:
+            await interaction.followup.send(
+                f"Only one championship can be active at a time. Close **{current['name']}** (#{current['id']}) before creating the next season.",
+                ephemeral=True,
+            )
+            return
         teams = await self.bot.db.list_teams()
         if len(teams) < 10:
             await interaction.followup.send("Create at least 10 race teams before starting a tournament wizard.", ephemeral=True)
