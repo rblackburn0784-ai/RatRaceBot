@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from data.defaults import CREW_MEMBERS, PARTS, WEATHER_CONDITIONS
+from data.defaults import CREW_MEMBERS, PARTS, TRACKS, WEATHER_CONDITIONS
 from models.domain import RaceEvent, RaceResult
 from models.enums import CarArchetype, EventType
 from models.stats import DriverStats
@@ -19,6 +19,7 @@ from services.progression import EMBLEMS, GARAGE_DECOR, LIVERIES
 from services.race_engine import POINTS_BY_POSITION
 from services.race_rewards import process_race_rewards
 from services.race_snapshot import restore_replay_snapshot
+from services.racing_world import ensure_world_schema
 from services.sponsors import SPONSORS
 from storage.database import SCHEMA
 
@@ -212,6 +213,10 @@ class RecoveryManager:
 
     async def validate_database(self) -> dict[str, Any]:
         await self.init()
+        # World tables were deliberately lazy in v0.4.8. Health validation now
+        # materialises them first so a missing world subsystem cannot be hidden.
+        await ensure_world_schema(self.db)
+
         issues: list[str] = []
         warnings: list[str] = []
         async with self.db.lock:
@@ -226,9 +231,12 @@ class RecoveryManager:
                 issues.append(f"Foreign-key check returned {len(foreign)} row(s).")
 
             required_tables = {
-                "teams", "tournaments", "tournament_teams", "races", "team_profiles",
-                "team_rivalries", "team_progress", "team_season_history", "race_processing", "recovery_log",
-                "race_presentation_state",
+                "teams", "tournaments", "tournament_teams", "races", "tournament_schedule",
+                "team_profiles", "team_rivalries", "season_history", "team_season_history",
+                "team_progress", "team_achievements", "sponsor_offers", "team_identity",
+                "team_fatigue", "track_records", "team_setups", "race_processing",
+                "recovery_log", "race_presentation_state", "rivalry_story_stats",
+                "racing_world_processed", "world_events",
             }
             present = {
                 str(row["name"])
@@ -257,13 +265,22 @@ class RecoveryManager:
                     issues.append(f"Team #{team_id}: malformed parts JSON.")
                 try:
                     crew = json.loads(row["crew_json"])
-                    if not isinstance(crew, dict) or any(key not in CREW_MEMBERS for key in crew.values()):
+                    if (
+                        not isinstance(crew, dict)
+                        or any(
+                            key not in CREW_MEMBERS
+                            or CREW_MEMBERS[key].slot.value != str(slot)
+                            for slot, key in crew.items()
+                        )
+                    ):
                         issues.append(f"Team #{team_id}: invalid crew data.")
                 except Exception:
                     issues.append(f"Team #{team_id}: malformed crew JSON.")
 
-            for row in conn.execute("SELECT id, events_json, results_json, replay_json FROM races").fetchall():
+            for row in conn.execute("SELECT id, tournament_id, track_key, events_json, results_json, replay_json FROM races").fetchall():
                 race_id = int(row["id"])
+                if str(row["track_key"]) not in TRACKS:
+                    issues.append(f"Race #{race_id}: unknown track key {row['track_key']!r}.")
                 for column in ("events_json", "results_json"):
                     try:
                         value = json.loads(row[column])
@@ -279,30 +296,63 @@ class RecoveryManager:
                     except Exception:
                         issues.append(f"Race #{race_id}: malformed replay_json.")
 
+            for row in conn.execute("SELECT tournament_id, race_number, track_key FROM tournament_schedule").fetchall():
+                if str(row["track_key"]) not in TRACKS:
+                    issues.append(
+                        f"Tournament #{int(row['tournament_id'])} round {int(row['race_number'])}: "
+                        f"unknown track key {row['track_key']!r}."
+                    )
+
             orphan_checks = {
-                "tournament teams": "SELECT COUNT(*) AS c FROM tournament_teams tt LEFT JOIN teams t ON t.id=tt.team_id WHERE t.id IS NULL",
-                "team profiles": "SELECT COUNT(*) AS c FROM team_profiles p LEFT JOIN teams t ON t.id=p.team_id WHERE t.id IS NULL",
-                "team progress": "SELECT COUNT(*) AS c FROM team_progress p LEFT JOIN teams t ON t.id=p.team_id WHERE t.id IS NULL",
+                "tournament teams": "SELECT COUNT(*) AS c FROM tournament_teams x LEFT JOIN teams t ON t.id=x.team_id LEFT JOIN tournaments tr ON tr.id=x.tournament_id WHERE t.id IS NULL OR tr.id IS NULL",
+                "tournament schedule rows": "SELECT COUNT(*) AS c FROM tournament_schedule x LEFT JOIN tournaments tr ON tr.id=x.tournament_id WHERE tr.id IS NULL",
+                "tournament races": "SELECT COUNT(*) AS c FROM races r LEFT JOIN tournaments tr ON tr.id=r.tournament_id WHERE r.tournament_id IS NOT NULL AND tr.id IS NULL",
+                "team profiles": "SELECT COUNT(*) AS c FROM team_profiles x LEFT JOIN teams t ON t.id=x.team_id WHERE t.id IS NULL",
+                "team progress": "SELECT COUNT(*) AS c FROM team_progress x LEFT JOIN teams t ON t.id=x.team_id WHERE t.id IS NULL",
+                "team achievements": "SELECT COUNT(*) AS c FROM team_achievements x LEFT JOIN teams t ON t.id=x.team_id WHERE t.id IS NULL",
+                "sponsor offers": "SELECT COUNT(*) AS c FROM sponsor_offers x LEFT JOIN teams t ON t.id=x.team_id WHERE t.id IS NULL",
+                "team identity rows": "SELECT COUNT(*) AS c FROM team_identity x LEFT JOIN teams t ON t.id=x.team_id WHERE t.id IS NULL",
+                "team fatigue rows": "SELECT COUNT(*) AS c FROM team_fatigue x LEFT JOIN teams t ON t.id=x.team_id WHERE t.id IS NULL",
+                "team setups": "SELECT COUNT(*) AS c FROM team_setups x LEFT JOIN teams t ON t.id=x.team_id WHERE t.id IS NULL",
+                "team season history": "SELECT COUNT(*) AS c FROM team_season_history x LEFT JOIN teams t ON t.id=x.team_id LEFT JOIN tournaments tr ON tr.id=x.tournament_id WHERE t.id IS NULL OR tr.id IS NULL",
+                "season history": "SELECT COUNT(*) AS c FROM season_history x LEFT JOIN tournaments tr ON tr.id=x.tournament_id WHERE tr.id IS NULL",
+                "track record team references": "SELECT COUNT(*) AS c FROM track_records x LEFT JOIN teams t ON t.id=x.team_id WHERE x.team_id IS NOT NULL AND t.id IS NULL",
+                "track record race references": "SELECT COUNT(*) AS c FROM track_records x LEFT JOIN races r ON r.id=x.race_id WHERE x.race_id IS NOT NULL AND r.id IS NULL",
+                "team rivalries": "SELECT COUNT(*) AS c FROM team_rivalries x LEFT JOIN teams a ON a.id=x.team_a_id LEFT JOIN teams b ON b.id=x.team_b_id WHERE a.id IS NULL OR b.id IS NULL",
+                "rivalry story stats": "SELECT COUNT(*) AS c FROM rivalry_story_stats x LEFT JOIN teams a ON a.id=x.team_a_id LEFT JOIN teams b ON b.id=x.team_b_id WHERE a.id IS NULL OR b.id IS NULL",
+                "world events": "SELECT COUNT(*) AS c FROM world_events x LEFT JOIN teams t ON t.id=x.team_id LEFT JOIN races r ON r.id=x.race_id WHERE t.id IS NULL OR r.id IS NULL",
+                "race processing rows": "SELECT COUNT(*) AS c FROM race_processing x LEFT JOIN races r ON r.id=x.race_id WHERE r.id IS NULL",
+                "world processing rows": "SELECT COUNT(*) AS c FROM racing_world_processed x LEFT JOIN races r ON r.id=x.race_id WHERE r.id IS NULL",
+                "race presentation rows": "SELECT COUNT(*) AS c FROM race_presentation_state x LEFT JOIN races r ON r.id=x.race_id WHERE r.id IS NULL",
             }
             for label, sql in orphan_checks.items():
                 count = int(conn.execute(sql).fetchone()["c"])
                 if count:
                     issues.append(f"Orphaned {label}: {count} row(s).")
 
-            open_tournaments = conn.execute("SELECT id, name FROM tournaments WHERE status='open' ORDER BY id").fetchall()
+            open_tournaments = conn.execute(
+                "SELECT id, name FROM tournaments WHERE status='open' ORDER BY id"
+            ).fetchall()
             if len(open_tournaments) > 1:
-                warnings.append(f"{len(open_tournaments)} tournaments are open at once.")
+                issues.append(
+                    "Multiple active championships detected: "
+                    + ", ".join(f"#{int(row['id'])} {row['name']}" for row in open_tournaments)
+                )
 
             latest = conn.execute("SELECT MAX(id) AS id FROM races").fetchone()
             latest_id = int(latest["id"] or 0)
             if latest_id and not self.checkpoint_for_race(latest_id):
-                warnings.append(f"Latest race #{latest_id} has no v0.4.9 pre-race checkpoint; destructive recovery is unavailable for it.")
+                warnings.append(
+                    f"Latest race #{latest_id} has no v0.4.9+ pre-race checkpoint; "
+                    "destructive recovery is unavailable for it."
+                )
 
         return {
             "ok": not issues,
             "integrity": integrity,
             "issues": issues,
             "warnings": warnings,
+            "tables_checked": len(required_tables),
         }
 
     async def log(self, action: str, target_type: str | None, target_id: int | None, details: dict[str, Any] | None = None) -> None:
