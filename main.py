@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from config import Settings
 from storage.database import Database
 from services.race_activity import RaceActivityRegistry
+from services.recovery import RecoveryManager
 
 COGS = [
     "cogs.admin",
@@ -16,6 +17,7 @@ COGS = [
     "cogs.racing",
     "cogs.tournaments",
     "cogs.world",
+    "cogs.recovery",
     "cogs.menu",
 ]
 
@@ -27,9 +29,12 @@ class RatRodBot(commands.Bot):
         self.settings = settings
         self.db = Database(settings.database_path)
         self.race_activity = RaceActivityRegistry()
+        self.recovery_lock = asyncio.Lock()
+        self.recovery = RecoveryManager(self.db, settings.database_path)
 
     async def setup_hook(self) -> None:
         await self.db.init()
+        await self.recovery.init()
         for cog in COGS:
             await self.load_extension(cog)
         if self.settings.guild_id:
