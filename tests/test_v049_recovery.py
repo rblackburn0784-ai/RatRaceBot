@@ -5,13 +5,15 @@ import unittest
 from pathlib import Path
 
 from data.defaults import PARTS
-from models.domain import RaceResult, Team
-from models.enums import CarArchetype
+from models.domain import RaceEvent, RaceResult, Team
+from models.enums import CarArchetype, EventType
 from models.stats import DriverStats
 from services.race_rewards import process_race_rewards
 from services.race_snapshot import build_replay_snapshot
 from services.recovery import RecoveryError, RecoveryManager
 from services.race_activity import RaceActivityRegistry
+from services.media import MediaRegistry
+from services.streamer import RaceStreamer
 from storage.database import Database
 
 
@@ -162,7 +164,60 @@ class RecoveryDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("race_presentation_state", tables)
 
 
+    async def test_restore_tournament_reopens_closed_state_and_removes_history(self):
+        for index in range(4, 11):
+            team = make_team(index)
+            team.id = await self.db.create_team(team)
+            self.teams.append(team)
+        tournament_id = await self.db.create_tournament("RC Restore Cup")
+        for team in self.teams[:10]:
+            await self.db.add_team_to_tournament(tournament_id, int(team.id))
+        results = [vars_like(result(team, position)) for position, team in enumerate(self.teams[:10], start=1)]
+        await self.db.save_tournament_race(tournament_id, "neon_mile", "restore-tournament", [], results)
+        await self.db.close_tournament(tournament_id)
+        self.assertEqual((await self.db.get_tournament(tournament_id))["status"], "closed")
+        self.assertIsNotNone(await self.db.season_history_entry(tournament_id))
+        restored = await self.recovery.restore_tournament(tournament_id)
+        self.assertFalse(restored["already_open"])
+        self.assertEqual((await self.db.get_tournament(tournament_id))["status"], "open")
+        self.assertIsNone(await self.db.season_history_entry(tournament_id))
+
+    async def test_restore_backup_rejects_corrupt_sqlite_file(self):
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        corrupt = self.backup_dir / "corrupt.sqlite3"
+        corrupt.write_bytes(b"this is not sqlite")
+        with self.assertRaises(RecoveryError):
+            await self.recovery.restore_backup(corrupt.name)
+
+
 class RecoveryConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_streamer_resumes_from_saved_event_index_without_reposting_earlier_events(self):
+        class FakeChannel:
+            def __init__(self):
+                self.sent = []
+            async def send(self, content=None, **kwargs):
+                self.sent.append(content or kwargs)
+
+        events = [
+            RaceEvent(EventType.START, 0, "start"),
+            RaceEvent(EventType.OVERTAKE, 1, "second"),
+            RaceEvent(EventType.FINISH, 2, "third"),
+        ]
+        streamer = RaceStreamer(MediaRegistry(), tick_seconds=0)
+        streamer.dynamic_gifs.render = lambda event: None
+        channel = FakeChannel()
+        progressed = []
+
+        async def progress(index: int):
+            progressed.append(index)
+
+        await streamer.stream(channel, events, start_index=1, progress_callback=progress)
+        text = "\n".join(str(item) for item in channel.sent)
+        self.assertNotIn("start", text)
+        self.assertIn("second", text)
+        self.assertIn("third", text)
+        self.assertEqual(progressed, [1, 2])
+
     async def test_registry_snapshot_reports_and_clears_concurrent_state(self):
         registry = RaceActivityRegistry()
         first = await registry.reserve_race([1, 2], tournament_id=10)
