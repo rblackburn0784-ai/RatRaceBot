@@ -1100,43 +1100,11 @@ class Database:
                         ),
                     )
 
-                # Rivalries are derived from adjacent classified cars. A "close finish" only
-                # exists when both cars actually finished; incidents can still fuel a rivalry.
-                ordered = sorted(saved_results, key=lambda result: int(result["position"]))
-                for first, second in zip(ordered, ordered[1:]):
-                    both_finished = (
-                        not first.get("dnf") and not first.get("disqualified")
-                        and not second.get("dnf") and not second.get("disqualified")
-                    )
-                    time_gap = abs(float(first.get("total_time", 0)) - float(second.get("total_time", 0)))
-                    close_finish = both_finished and time_gap <= 5
-                    contacts = int(first.get("crashes", 0)) + int(second.get("crashes", 0))
-                    illegal_incidents = (
-                        int(first.get("illegal_moves", 0)) + int(second.get("illegal_moves", 0))
-                        + (1 if first.get("disqualified") else 0) + (1 if second.get("disqualified") else 0)
-                    )
-                    if not close_finish and contacts == 0 and illegal_incidents == 0:
-                        continue
-                    heat = (2 if close_finish else 0) + contacts + illegal_incidents * 2
-                    team_a_id, team_b_id = sorted((int(first["team_id"]), int(second["team_id"])))
-                    conn.execute(
-                        """
-                        INSERT INTO team_rivalries(
-                            team_a_id, team_b_id, heat, races, close_finishes,
-                            contacts, illegal_incidents, last_winner_id
-                        )
-                        VALUES (?, ?, ?, 1, ?, ?, ?, ?)
-                        ON CONFLICT(team_a_id, team_b_id) DO UPDATE SET
-                            heat = heat + excluded.heat,
-                            races = races + 1,
-                            close_finishes = close_finishes + excluded.close_finishes,
-                            contacts = contacts + excluded.contacts,
-                            illegal_incidents = illegal_incidents + excluded.illegal_incidents,
-                            last_winner_id = excluded.last_winner_id,
-                            updated_at = CURRENT_TIMESTAMP
-                        """,
-                        (team_a_id, team_b_id, max(1, heat), 1 if close_finish else 0, contacts, illegal_incidents, int(first["team_id"])),
-                    )
+                # v0.4.8: rivalry attribution moved to services.racing_world, which
+                # consumes actor/target race events instead of assuming adjacent
+                # classified cars caused one another's incidents. This keeps the
+                # progression transaction focused on team stats/rewards and avoids
+                # double-counting rivalry heat.
 
                 for update in xp_updates:
                     conn.execute(
