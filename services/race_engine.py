@@ -202,6 +202,7 @@ class RaceEngine:
         laps: int | None = None,
         weather_key: str | None = None,
         rng_state: tuple | None = None,
+        rivalry_heat_by_pair: dict[tuple[int, int], int] | None = None,
     ):
         if track_key not in TRACKS:
             raise ValueError(f"Unknown track '{track_key}'.")
@@ -228,6 +229,10 @@ class RaceEngine:
         self._trait_cache: dict[int, object] = {}
         self._strain_cache: dict[int, float] = {}
         self._pending_pit_events: list[tuple[RaceState, RaceEvent, int]] = []
+        self.rivalry_heat_by_pair = {
+            (min(int(first), int(second)), max(int(first), int(second))): min(100, max(0, int(heat)))
+            for (first, second), heat in (rivalry_heat_by_pair or {}).items()
+        }
 
     def _roll(self, sides: int = 20) -> int:
         return self.rng.randint(1, sides)
@@ -304,6 +309,13 @@ class RaceEngine:
         context: dict | None = None,
     ) -> RaceEvent:
         event_context = dict(context or {})
+        rivalry_heat = self._rivalry_heat(actor, target)
+        if rivalry_heat:
+            event_context.setdefault("rivalry_heat", rivalry_heat)
+        if rivalry_heat >= 70 and event_type in {EventType.OVERTAKE, EventType.ILLEGAL_MOVE}:
+            message = f"🔥 Rivalry boiling over ({rivalry_heat}): {message}"
+        elif rivalry_heat >= 50 and event_type in {EventType.OVERTAKE, EventType.ILLEGAL_MOVE}:
+            message = f"🔥 Rivalry watch ({rivalry_heat}): {message}"
         event_context.setdefault("phase", phase_for_lap(lap, self.laps))
         event_context.setdefault("laps", self.laps)
         if actor:
@@ -357,10 +369,22 @@ class RaceEngine:
         for state, colour in zip(self.states, colours):
             state.car_colour = colour
 
+    def _rivalry_heat(self, first: RaceState | None, second: RaceState | None) -> int:
+        if first is None or second is None or first.team.id is None or second.team.id is None:
+            return 0
+        key = (min(int(first.team.id), int(second.team.id)), max(int(first.team.id), int(second.team.id)))
+        return min(100, max(0, int(self.rivalry_heat_by_pair.get(key, 0))))
+
     def _rival_for(self, state: RaceState) -> RaceState | None:
         rivals = [s for s in self.states if s is not state and not s.dnf and not s.disqualified]
         if not rivals:
             return None
+        hot = [
+            rival for rival in rivals
+            if self._rivalry_heat(state, rival) >= 50 and abs(rival.position - state.position) <= 2
+        ]
+        if hot:
+            return max(hot, key=lambda rival: (self._rivalry_heat(state, rival), -abs(rival.position - state.position)))
         return min(rivals, key=lambda s: abs(s.position - state.position))
 
     def _team_cache_key(self, team: Team) -> int:
@@ -621,6 +645,8 @@ class RaceEngine:
         drv = state.team.stats
         crew = self._crew_effects(state.team)
         traits = self._trait_effects(state.team)
+        rival = self._rival_for(state)
+        rivalry_heat = self._rivalry_heat(state, rival)
         dirty_chance = (
             0.8
             + max(0, drv.aggression - 3) * 1.35
@@ -629,9 +655,12 @@ class RaceEngine:
             - drv.nerve * 0.28
             - max(0.0, crew.strategy) * 0.20
         )
-        dirty_chance = max(0.2, min(18.0, dirty_chance))
+        # Rivalries are flavour first. Even at 100 heat the extra illegal-contact
+        # pressure is capped below one percentage point, so it cannot overwhelm build skill.
+        if rivalry_heat >= 50:
+            dirty_chance += min(0.8, rivalry_heat / 125.0)
+        dirty_chance = max(0.2, min(18.8, dirty_chance))
         if self._roll(100) <= dirty_chance:
-            rival = self._rival_for(state)
             rival_colour = rival.car_colour if rival else None
             rival_text = f" into the {rival.car_colour} car" if rival else " into a rival door"
             state.illegal_moves += 1
