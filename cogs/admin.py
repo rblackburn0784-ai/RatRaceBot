@@ -30,7 +30,7 @@ from services.streamer import RaceStreamer
 from services.team_ids import parse_team_ids_csv
 from services.team_sheet import render_team_sheet
 from services.views import ConfirmView, PaginatedTextView
-from services.ui_safety import ReliableView
+from services.ui_safety import ReliableModal, ReliableView
 
 ADMIN_BACKGROUND = ADMIN_PANEL_BACKGROUND
 
@@ -97,7 +97,7 @@ class AdminActionButton(discord.ui.Button):
         await view.handle_action(interaction, self.key)
 
 
-class TournamentNameModal(discord.ui.Modal):
+class TournamentNameModal(ReliableModal):
     def __init__(self, view: "AdminPanelView"):
         super().__init__(title="Create Tournament")
         self.view_ref = view
@@ -121,7 +121,7 @@ class TournamentNameModal(discord.ui.Modal):
         await audit_log(self.view_ref.cog.bot, "Tournament Created", f"#{tournament_id} {name}", interaction.user)
 
 
-class RangeModal(discord.ui.Modal):
+class RangeModal(ReliableModal):
     def __init__(self, view: "AdminPanelView"):
         super().__init__(title="Personalize Saved AI")
         self.view_ref = view
@@ -140,7 +140,7 @@ class RangeModal(discord.ui.Modal):
         await self.view_ref.personalize_ai_range(interaction, start_id, end_id)
 
 
-class RaceReplayModal(discord.ui.Modal):
+class RaceReplayModal(ReliableModal):
     def __init__(self, view: "AdminPanelView"):
         super().__init__(title="Replay Race")
         self.view_ref = view
