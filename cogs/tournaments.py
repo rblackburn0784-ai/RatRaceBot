@@ -28,6 +28,7 @@ from services.preflight import race_preflight_embed
 from services.predictions import PredictionView
 from services.race_engine import RaceEngine
 from services.race_report import send_race_report
+from services.race_rewards import process_race_rewards
 from services.race_snapshot import build_replay_snapshot
 from services.racing_world import rivalry_heat_map
 from services.scrutineering import scrutineering_embed
@@ -522,27 +523,58 @@ class TournamentsCog(commands.Cog):
 
             events, results, used_seed = engine.run()
             result_dicts = RaceEngine.results_to_dicts(results)
-            replay_data = build_replay_snapshot(
-                teams,
-                laps=engine.laps,
-                initial_damage_by_team_id=carryover_damage,
-                weather_key=engine.weather.key,
-                rng_state=engine.initial_rng_state,
-                rivalry_heat_by_pair=active_rivalry_heat,
-            )
-            try:
-                race_id = await self.bot.db.save_tournament_race(
-                    tournament_id,
-                    track_key,
-                    used_seed,
-                    RaceEngine.events_to_dicts(events),
-                    result_dicts,
-                    replay_data=replay_data,
-                    schedule_race_number=schedule_race_number,
+            reward_embeds: list[discord.Embed] = []
+            async with self.bot.recovery_lock:
+                checkpoint_token = await self.bot.recovery.create_race_checkpoint(
+                    {
+                        "track_key": track_key,
+                        "laps": engine.laps,
+                        "team_ids": requested_ids,
+                        "tournament_id": tournament_id,
+                        "schedule_race_number": schedule_race_number,
+                        "seed": used_seed,
+                    }
                 )
-            except ValueError as exc:
-                await interaction.channel.send(f"Tournament race was not saved: {exc}")
-                return
+                replay_data = build_replay_snapshot(
+                    teams,
+                    laps=engine.laps,
+                    initial_damage_by_team_id=carryover_damage,
+                    weather_key=engine.weather.key,
+                    rng_state=engine.initial_rng_state,
+                    rivalry_heat_by_pair=active_rivalry_heat,
+                )
+                try:
+                    race_id = await self.bot.db.save_tournament_race(
+                        tournament_id,
+                        track_key,
+                        used_seed,
+                        RaceEngine.events_to_dicts(events),
+                        result_dicts,
+                        replay_data=replay_data,
+                        schedule_race_number=schedule_race_number,
+                    )
+                except ValueError as exc:
+                    await interaction.channel.send(f"Tournament race was not saved: {exc}")
+                    return
+                self.bot.recovery.bind_race_checkpoint(checkpoint_token, race_id)
+                await self.bot.recovery.mark_presentation(race_id, -1, "saved")
+                result_title = f"{title_prefix} #{race_id} Results"
+                try:
+                    reward_embeds = await process_race_rewards(
+                        self.bot.db,
+                        track_key,
+                        race_id,
+                        teams,
+                        results,
+                        events,
+                        engine.weather.name,
+                        result_title,
+                        engine.laps,
+                    )
+                except Exception:
+                    logging.exception("Tournament post-race processing failed for race %s; restoring checkpoint", race_id)
+                    await self.bot.recovery.undo_last_race()
+                    raise
 
             if schedule_race_number is None and await self.bot.db.tournament_schedule(tournament_id):
                 await interaction.channel.send(
@@ -552,12 +584,24 @@ class TournamentsCog(commands.Cog):
 
             stream_error = None
             try:
-                await RaceStreamer(self.media, self.bot.settings.race_tick_seconds).stream(interaction.channel, events)
+                await self.bot.recovery.mark_presentation(race_id, -1, "streaming")
+
+                async def progress_callback(index: int) -> None:
+                    await self.bot.recovery.mark_presentation(race_id, index, "streaming")
+
+                await RaceStreamer(self.media, self.bot.settings.race_tick_seconds).stream(
+                    interaction.channel,
+                    events,
+                    progress_callback=progress_callback,
+                )
+                await self.bot.recovery.mark_presentation(race_id, len(events) - 1, "complete")
             except (discord.HTTPException, OSError) as exc:
                 stream_error = exc
+                state = await self.bot.recovery.presentation_state(race_id)
+                last_index = int(state["last_event_index"]) if state else -1
+                await self.bot.recovery.mark_presentation(race_id, last_index, "interrupted")
                 logging.exception("Tournament race streaming failed for race %s", race_id)
 
-            result_title = f"{title_prefix} #{race_id} Results"
             report_error = None
             try:
                 await send_race_report(
@@ -573,6 +617,9 @@ class TournamentsCog(commands.Cog):
                     race_laps=engine.laps,
                     predictions=predictions,
                     rivalry_watch=None,
+                    award_rewards=False,
+                    reward_embeds_override=reward_embeds,
+                    persisted_report=True,
                 )
             except (discord.HTTPException, OSError) as exc:
                 report_error = exc
