@@ -1,4 +1,4 @@
-Rat Rod Racing Bot v0.4.7 — Championships & Season Structure
-Release date: 2026-10-05
+Rat Rod Racing Bot v0.4.8 — Rivalries, Stories & Racing World
+Release date: 2026-10-06
 
-See UPGRADE_v0.4.7.md before replacing an existing installation.
+See UPGRADE_v0.4.8.md before replacing an existing installation.
