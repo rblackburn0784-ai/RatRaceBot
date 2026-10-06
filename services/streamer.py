@@ -69,6 +69,9 @@ class RaceStreamer:
             except OSError:
                 # Optional media must never interrupt a saved race. Fall back to text.
                 await channel.send(content)
+            finally:
+                for attachment in files:
+                    attachment.close()
 
             if (
                 event.event_type == EventType.LAP
