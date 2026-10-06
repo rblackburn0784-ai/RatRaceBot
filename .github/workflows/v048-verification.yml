@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main, v0.4.9-release-candidate]
+    branches: [main, v0.5-blacktop-racing-world]
 
 jobs:
   test:
