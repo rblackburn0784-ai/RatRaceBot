@@ -6,7 +6,7 @@ v0.5.1 does not add gameplay. It hardens the v0.5 Blacktop Racing World for live
 
 Only one tournament may be open at a time.
 
-The rule is enforced inside the database transaction, so simultaneous admin clicks cannot create two active seasons. Existing databases that already contain multiple open tournaments are reported as a database-integrity failure by `/validate_database`.
+The rule is enforced inside the database transaction, so simultaneous admin clicks cannot create two active seasons. Existing databases that already contain multiple open tournaments are reported as a database-integrity failure by `/validate_database`. Empty/partial legacy seasons with no scoring races can be safely cancelled with `/tournament_close` without creating fake Season History.
 
 ## Atomic Tournament Wizard
 
