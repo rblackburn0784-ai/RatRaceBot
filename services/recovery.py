@@ -227,7 +227,7 @@ class RecoveryManager:
 
             required_tables = {
                 "teams", "tournaments", "tournament_teams", "races", "team_profiles",
-                "team_rivalries", "team_progress", "race_processing", "recovery_log",
+                "team_rivalries", "team_progress", "team_season_history", "race_processing", "recovery_log",
                 "race_presentation_state",
             }
             present = {
@@ -566,6 +566,7 @@ class RecoveryManager:
                 conn.execute("BEGIN")
                 conn.execute("UPDATE tournaments SET status='open' WHERE id=?", (int(tournament_id),))
                 conn.execute("DELETE FROM season_history WHERE tournament_id=?", (int(tournament_id),))
+                conn.execute("DELETE FROM team_season_history WHERE tournament_id=?", (int(tournament_id),))
                 conn.commit()
             except Exception:
                 conn.rollback()
