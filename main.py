@@ -48,11 +48,11 @@ class RatRodBot(commands.Bot):
             await self.tree.sync()
             logging.info("Synced global commands")
 
-    async def on_app_command_error(self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError) -> None:
-        logging.exception(
+    async def on_app_command_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        logging.error(
             "Slash command failed: %s",
             getattr(interaction.command, "qualified_name", "unknown"),
-            exc_info=error,
+            exc_info=(type(error), error, error.__traceback__),
         )
         await safe_reply(
             interaction,
