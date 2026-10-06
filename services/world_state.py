@@ -72,19 +72,19 @@ async def build_world_snapshot(db, team) -> dict[str, Any]:
     }
 
     next_action = "Open the garage and finish the car build."
-    next_key = "my_team"
+    next_key = "garage"
     if len(installed_slots) == len(PartSlot) and len(assigned_crew) < len(CrewSlot):
         next_action = "Hire or assign the remaining pit crew positions."
-        next_key = "pit_crew_wizard"
+        next_key = "crew"
     elif len(installed_slots) == len(PartSlot) and len(assigned_crew) == len(CrewSlot) and not setups:
         next_action = "Save a track setup so the garage is ready for different venues."
-        next_key = "my_team"
+        next_key = "setups"
     elif pending_events:
         next_action = "A Blacktop World decision is waiting for the team."
         next_key = "world_events"
     elif offered and not active_sponsor:
         next_action = "Review the sponsor offers waiting in the paddock."
-        next_key = "sponsor_offers"
+        next_key = "sponsors"
     elif tournament_state and tournament_state["entered"] and tournament_state["next_track"]:
         race_number, track_key = tournament_state["next_track"]
         track_name = TRACKS[track_key].name if track_key in TRACKS else track_key
@@ -92,7 +92,7 @@ async def build_world_snapshot(db, team) -> dict[str, Any]:
         next_key = "championship"
     else:
         next_action = "The team is ready. Pick a race and put the setup to work."
-        next_key = "race_wizard"
+        next_key = "race"
 
     return {
         "team": team,
