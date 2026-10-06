@@ -4,6 +4,7 @@ from discord.ext import commands
 
 from cogs.admin import AdminPanelView, TeamSelectView, admin_panel_embed, admin_panel_file
 from cogs.racing import RaceWizardView
+from cogs.tournaments import TournamentWizardView
 from cogs.teams import EditTeamWizardView, GarageView, MyTeamActionsView, PitCrewWizardView, SetupManagerView, SponsorOfferActionView, TeamIdentityView, TeamWizardView, team_identity_embed
 from config import BOT_VERSION
 from services.access import is_admin
@@ -118,6 +119,7 @@ class WorldHubView(ReliableView):
             ("recommended", "▶ Recommended Next", 2, discord.ButtonStyle.success),
             ("refresh", "Refresh World", 2, discord.ButtonStyle.primary),
             ("main_menu", "Main Menu", 2, discord.ButtonStyle.secondary),
+            ("next_season", "Next Season", 3, discord.ButtonStyle.success),
         ]
         for key, label, row, style in buttons:
             self.add_item(WorldActionButton(key, label, row, style))
@@ -308,6 +310,48 @@ class WorldHubView(ReliableView):
         snapshot = await build_world_snapshot(self.cog.bot.db, team)
         self.next_key = str(snapshot["next_key"])
         await interaction.response.edit_message(embed=world_hub_embed(snapshot), view=self)
+
+    async def _handle_next_season(self, interaction: discord.Interaction) -> None:
+        team = await self._require_team(interaction)
+        if not team:
+            return
+        current = await self.cog.bot.db.current_tournament()
+        if current:
+            await interaction.response.send_message(
+                f"**{current['name']}** is still the active season. Finish or close it before starting the next one.",
+                ephemeral=True,
+            )
+            return
+        history = await self.cog.bot.db.team_season_history(int(team.id), limit=1)
+        archive_note = (
+            f"Your last season, **{history[0]['season_name']}**, is permanently archived."
+            if history else
+            "This team has not completed a championship season yet."
+        )
+        if not is_admin(interaction):
+            await interaction.response.send_message(
+                archive_note + " An admin starts the next championship; you can keep running exhibition races while you wait.",
+                ephemeral=True,
+            )
+            return
+        tournaments_cog = self.cog.tournaments_cog()
+        if not tournaments_cog:
+            await interaction.response.send_message("Tournament tools are not loaded.", ephemeral=True)
+            return
+        teams = await self.cog.bot.db.list_teams()
+        if len(teams) < 10:
+            await interaction.response.send_message(
+                archive_note + f" The next championship needs 10 saved teams; only {len(teams)} exist.",
+                ephemeral=True,
+            )
+            return
+        view = TournamentWizardView(tournaments_cog, interaction.user.id, teams)
+        await interaction.response.send_message(
+            content=archive_note + " Build the next season below.",
+            embed=view.embed(),
+            view=view,
+            ephemeral=True,
+        )
 
     async def _handle_main_menu(self, interaction: discord.Interaction) -> None:
         view = MainMenuView(self.cog, interaction.user.id, show_admin=is_admin(interaction))
@@ -634,6 +678,9 @@ class MenuCog(commands.Cog):
 
     def admin_cog(self):
         return self.bot.get_cog("AdminCog")
+
+    def tournaments_cog(self):
+        return self.bot.get_cog("TournamentsCog")
 
     async def owned_or_admin_team(self, interaction: discord.Interaction, teams_cog=None):
         teams_cog = teams_cog or self.teams_cog()
