@@ -618,6 +618,17 @@ class Database:
                     "DELETE FROM team_rivalries WHERE team_a_id=? OR team_b_id=?",
                     (team_id, team_id),
                 )
+                if conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rivalry_story_stats'"
+                ).fetchone():
+                    conn.execute(
+                        "DELETE FROM rivalry_story_stats WHERE team_a_id=? OR team_b_id=?",
+                        (team_id, team_id),
+                    )
+                if conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='world_events'"
+                ).fetchone():
+                    conn.execute("DELETE FROM world_events WHERE team_id=?", (team_id,))
                 # Preserve historical track records by name, but remove the dead live-team reference.
                 conn.execute("UPDATE track_records SET team_id=NULL WHERE team_id=?", (team_id,))
                 conn.execute("DELETE FROM teams WHERE id=?", (team_id,))
