@@ -32,6 +32,24 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - Shared UI error handling catches callback failures and gives drivers a useful response instead of a silent Discord interaction failure.
 
 
+## v0.5.1 World Reliability Patch
+
+v0.5.1 adds no gameplay power. It hardens the persistent world for real multi-user seasons.
+
+- Exactly **one championship may be open at a time**, enforced inside the database transaction.
+- Tournament Wizard creation is atomic: tournament, 10 entrants and schedule either all commit or all roll back.
+- Permission/check failures no longer produce a second generic command-error response after the bot already explained the denial.
+- `/admin_health` verifies an explicit **59-command manifest**, runtime/release version alignment, media availability, race/tournament state and the full database health result.
+- `/validate_database` now audits **22 persistent/recovery/world tables**, track keys, JSON payloads, cross-table ownership/references and the single-active-season invariant.
+- Race audio is now functional: configured MP3s are attached as playable Discord files alongside event GIF/text, with graceful fallback when audio is absent.
+- Reliable Views disable bound controls on timeout; `/menu`, `/world`, permanent Team History and Season History explicitly bind their source messages.
+- Permanent Team History is paginated rather than silently stopping at eight displayed seasons.
+- CI runs the complete regression suite on **Python 3.12 and Python 3.13**; the full deterministic Balance Lab remains mandatory.
+- Competitive integrity is unchanged: progression still expands choices instead of granting automatic pace.
+
+See `RELIABILITY_v0.5.1.md` and `UPGRADE_v0.5.1.md`.
+
+
 ## v0.5 Blacktop Racing World
 
 v0.5 turns the existing systems into one persistent game loop rather than adding a new power layer.

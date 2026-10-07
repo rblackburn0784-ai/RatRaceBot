@@ -55,10 +55,23 @@ class RaceStreamer:
             # Pillow work is CPU/file-system heavy; keep it off Discord's event loop.
             dynamic_gif = await asyncio.to_thread(self.dynamic_gifs.render, event)
             gif = dynamic_gif or self.media.gif_path(event.media_key)
-            if gif:
-                await channel.send(content=content, file=discord.File(str(gif)))
-            else:
+            audio = self.media.audio_path(event.audio_key)
+            files: list[discord.File] = []
+            try:
+                if gif:
+                    files.append(discord.File(str(gif)))
+                if audio and (not gif or audio.resolve() != gif.resolve()):
+                    files.append(discord.File(str(audio)))
+                if files:
+                    await channel.send(content=content, files=files)
+                else:
+                    await channel.send(content)
+            except OSError:
+                # Optional media must never interrupt a saved race. Fall back to text.
                 await channel.send(content)
+            finally:
+                for attachment in files:
+                    attachment.close()
 
             if (
                 event.event_type == EventType.LAP

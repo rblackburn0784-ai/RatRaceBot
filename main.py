@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -49,6 +50,18 @@ class RatRodBot(commands.Bot):
             logging.info("Synced global commands")
 
     async def on_app_command_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        if isinstance(error, app_commands.CheckFailure):
+            # Cog-level permission checks often already explain the refusal. Do not
+            # follow that with a second generic "command failed" message.
+            if interaction.response.is_done():
+                return
+            await safe_reply(
+                interaction,
+                "You do not have permission to use that command.",
+                ephemeral=True,
+            )
+            return
+
         logging.error(
             "Slash command failed: %s",
             getattr(interaction.command, "qualified_name", "unknown"),
@@ -56,7 +69,7 @@ class RatRodBot(commands.Bot):
         )
         await safe_reply(
             interaction,
-            "That command could not be completed. Nothing else was changed. Reopen `/menu` or `/world` and try again.",
+            "That command hit an unexpected error. Reopen `/menu` or `/world`, check the current state, and try again.",
             ephemeral=True,
         )
 

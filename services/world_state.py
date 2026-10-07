@@ -201,7 +201,18 @@ def world_hub_embed(snapshot: dict[str, Any]) -> discord.Embed:
     return embed
 
 
-def career_history_embed(team, career: dict[str, int], seasons) -> discord.Embed:
+def career_history_embed(
+    team,
+    career: dict[str, int],
+    seasons,
+    *,
+    page: int = 0,
+    per_page: int = 4,
+) -> discord.Embed:
+    season_rows = list(seasons or [])
+    per_page = max(1, int(per_page))
+    page_count = max(1, (len(season_rows) + per_page - 1) // per_page)
+    page = max(0, min(int(page), page_count - 1))
     embed = discord.Embed(
         title=f"📚 Permanent Team History — {team.name}",
         description=f"{team.driver_name} · {team.car_name}",
@@ -216,11 +227,14 @@ def career_history_embed(team, career: dict[str, int], seasons) -> discord.Embed
         ),
         inline=False,
     )
-    if not seasons:
+    if not season_rows:
         embed.add_field(name="Season Archive", value="No completed championship seasons yet.", inline=False)
+        embed.set_footer(text="Page 1/1 · permanent championship archive")
         return embed
+
+    start = page * per_page
     lines = []
-    for row in seasons[:8]:
+    for row in season_rows[start:start + per_page]:
         awards = _json_list(row["awards_json"])
         award_text = ", ".join(str(item.get("name", "Award")) for item in awards[:3]) or "No individual award"
         lines.append(
@@ -228,6 +242,7 @@ def career_history_embed(team, career: dict[str, int], seasons) -> discord.Embed
             f"W {row['wins']} · Pod {row['podiums']} · FL {row['fastest_laps']}\n{award_text}"
         )
     embed.add_field(name="Season Archive", value="\n\n".join(lines)[:1024], inline=False)
+    embed.set_footer(text=f"Page {page + 1}/{page_count} · permanent championship archive")
     return embed
 
 

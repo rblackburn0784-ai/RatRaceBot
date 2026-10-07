@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from config import BOT_VERSION
 from data.defaults import WEATHER_CONDITIONS
 from models.domain import Team
 from services.access import deny_admin_only, is_admin
@@ -18,6 +19,23 @@ from services.recovery import RecoveryError
 from services.streamer import RaceStreamer
 
 
+EXPECTED_SLASH_COMMANDS = {
+    "ratbot_init", "media_list", "parts_catalogue", "backup_database", "admin_panel", "ai_personalize_saved",
+    "world", "menu", "status", "version",
+    "race_tracks", "race_wizard", "race_quick", "race_demo", "race_replay", "track_cards",
+    "admin_health", "validate_database", "undo_last_race", "reprocess_race", "correct_result",
+    "restore_tournament", "repair_team_data", "restore_backup", "resume_interrupted_race",
+    "team_create", "team_wizard", "team_edit_wizard", "team_list", "team_sheet", "team_reputation",
+    "my_team", "scrutineering", "hall_of_fame", "team_rivalries", "team_progress", "team_title",
+    "sponsor_offers", "team_identity", "track_records", "team_delete", "parts_wizard",
+    "pit_crew_wizard", "team_add_part", "team_remove_part",
+    "tournament_create", "tournament_wizard", "tournament_add_team", "tournament_standings",
+    "tournament_stats", "season_history", "championship", "tournament_start_race",
+    "tournament_next_race", "tournament_schedule", "tournament_close",
+    "world_events", "world_event_choose", "rivalry_story",
+}
+
+
 RESULT_STATUS_CHOICES = [
     app_commands.Choice(name="Keep current status", value="keep"),
     app_commands.Choice(name="Official finisher", value="finish"),
@@ -27,7 +45,7 @@ RESULT_STATUS_CHOICES = [
 
 
 class RecoveryCog(commands.Cog):
-    """v0.4.9 release-candidate administration and recovery tools."""
+    """v0.5.1 administration, health and recovery tools."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -74,7 +92,10 @@ class RecoveryCog(commands.Cog):
         tournament = await self.bot.db.current_tournament()
         backups = self.bot.recovery.list_backups()
         available_media, total_media = self._media_summary()
-        commands_loaded = len(self.bot.tree.get_commands())
+        loaded_commands = {command.name for command in self.bot.tree.get_commands()}
+        missing_commands = sorted(EXPECTED_SLASH_COMMANDS - loaded_commands)
+        extra_commands = sorted(loaded_commands - EXPECTED_SLASH_COMMANDS)
+        commands_ok = not missing_commands and not extra_commands
         release_health = {}
         health_path = Path("data/release_health.json")
         if health_path.exists():
@@ -88,18 +109,34 @@ class RecoveryCog(commands.Cog):
         balance_status = str(release_health.get("balance_lab", "UNKNOWN")).upper()
         balance_icon = "✅" if balance_status == "PASS" else "⚠️"
         test_status = str(release_health.get("tests", "UNKNOWN")).upper()
+        py312_status = str(release_health.get("python_312", test_status)).upper()
+        py313_status = str(release_health.get("python_313", test_status)).upper()
         interrupted = await self.bot.recovery.interrupted_races()
 
+        release_version = str(release_health.get("version", "UNKNOWN"))
+        release_version_ok = release_version == str(BOT_VERSION)
+        overall_ok = (
+            validation["ok"]
+            and commands_ok
+            and balance_status == "PASS"
+            and py312_status == "PASS"
+            and py313_status == "PASS"
+            and release_version_ok
+        )
         embed = discord.Embed(
             title="🛠️ Rat Rod Admin Health",
-            description="v0.4.9 release-candidate diagnostics",
-            color=discord.Color.green() if validation["ok"] else discord.Color.red(),
+            description=f"v{BOT_VERSION} runtime diagnostics",
+            color=discord.Color.green() if overall_ok else discord.Color.orange(),
         )
+        command_icon = "✅" if commands_ok else "❌"
+        version_icon = "✅" if release_version_ok else "⚠️"
         embed.add_field(
             name="Core",
             value=(
-                f"Bot: ✅\nDatabase: {db_icon}\nCommands: **{commands_loaded}/{commands_loaded} loaded**\n"
-                f"Media: **{available_media}/{total_media} available**"
+                f"Bot: ✅\nDatabase: {db_icon}\n"
+                f"Commands: {command_icon} **{len(loaded_commands)}/{len(EXPECTED_SLASH_COMMANDS)} expected**\n"
+                f"Media: **{available_media}/{total_media} available**\n"
+                f"Build Metadata: {version_icon} **{release_version}**"
             ),
             inline=True,
         )
@@ -114,11 +151,27 @@ class RecoveryCog(commands.Cog):
         embed.add_field(
             name="Release Gate",
             value=(
-                f"Tests: **{test_status}**\nBalance Lab: {balance_icon} **{balance_status}**\n"
-                f"Database Issues: **{len(validation['issues'])}**\nDatabase Warnings: **{len(validation['warnings'])}**"
+                f"Tests Python 3.12: **{py312_status}**\n"
+                f"Tests Python 3.13: **{py313_status}**\n"
+                f"Balance Lab: {balance_icon} **{balance_status}**\n"
+                f"Database Tables Checked: **{validation.get('tables_checked', 0)}**\n"
+                f"Database Issues: **{len(validation['issues'])}** · Warnings: **{len(validation['warnings'])}**"
             ),
             inline=False,
         )
+        if missing_commands or extra_commands:
+            details = []
+            if missing_commands:
+                details.append("Missing: " + ", ".join(f"`/{name}`" for name in missing_commands))
+            if extra_commands:
+                details.append("Unexpected: " + ", ".join(f"`/{name}`" for name in extra_commands))
+            embed.add_field(name="Command Registration", value="\n".join(details)[:1024], inline=False)
+        if not release_version_ok:
+            embed.add_field(
+                name="Build Metadata",
+                value=f"Runtime is v{BOT_VERSION}, but release_health.json reports {release_version}.",
+                inline=False,
+            )
         if validation["issues"]:
             embed.add_field(name="Database Problems", value="\n".join(f"• {item}" for item in validation["issues"][:8])[:1024], inline=False)
         if validation["warnings"]:

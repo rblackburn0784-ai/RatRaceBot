@@ -113,11 +113,25 @@ class MediaRegistry:
     def audio_path(self, key: str | None) -> Path | None:
         if not key:
             return None
-        raw = self.data.get("audio", {}).get(key)
-        if not raw:
-            return None
-        p = Path(raw)
-        return p if p.exists() else None
+        aliases = {
+            "lap": "lap_leader",
+            "warning": "illegal_move",
+            "last_minute_win": "finish_line",
+        }
+        keys_to_try = [key]
+        alias = aliases.get(key)
+        if alias:
+            keys_to_try.append(alias)
+        keys_to_try.extend(candidate for candidate in self._fallback_keys(key) if candidate not in keys_to_try)
+        for lookup_key in keys_to_try:
+            raw = self.data.get("audio", {}).get(lookup_key)
+            path = self._existing_path(raw)
+            if path:
+                return path
+            direct_file = Path("assets/audio") / f"{lookup_key}.mp3"
+            if direct_file.exists():
+                return direct_file
+        return None
 
     def keys_text(self) -> str:
         gifs = ", ".join(sorted(self.data.get("gifs", {}).keys())) or "none"
