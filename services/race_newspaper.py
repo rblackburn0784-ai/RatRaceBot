@@ -27,6 +27,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_PATH = PROJECT_ROOT / "assets" / "newspaper" / "newspaper_template.png"
 TEMPLATE_SIZE = (1103, 1426)
 TEMPLATE_BLUE = (28, 41, 54)
+TEMPLATE_STANDINGS_ROW_Y = (650, 671, 692, 713, 734)
+TEMPLATE_AWARD_ROW_Y = (651, 676, 698, 722, 747, 772, 798, 823)
+TEMPLATE_RECORD_ROW_Y = (914, 939, 963, 988, 1013)
 PAPER = (237, 222, 190)
 INK = (30, 28, 23)
 FADED = (88, 76, 58)
@@ -413,17 +416,17 @@ def _draw_stamp(draw, title: str, track_name: str, weather_name: str, fonts: dic
 
 def _draw_award_values(draw, ordered: list[RaceResult], fonts: dict[str, object]) -> None:
     # Baselines follow the eight labels already printed in the original artwork.
-    awards = (
-        ("overtakes", 651),
-        ("crashes", 676),
-        ("illegal_moves", 698),
-        ("last_minute_wins", 722),
-        ("near_misses", 747),
-        ("pit_stops", 772),
-        ("damage", 798),
-        ("damage", 823),
+    award_keys = (
+        "overtakes",
+        "crashes",
+        "illegal_moves",
+        "last_minute_wins",
+        "near_misses",
+        "pit_stops",
+        "damage",
+        "damage",
     )
-    for key, y in awards:
+    for key, y in zip(award_keys, TEMPLATE_AWARD_ROW_Y):
         leader = max(ordered, key=lambda result: (int(getattr(result, key, 0)), result.points))
         value = int(getattr(leader, key, 0))
         text = f"{_short_name(leader.team_name, 18)} — {value}"
@@ -441,8 +444,7 @@ def _draw_template_records(draw, reward_embeds: list[discord.Embed], fonts: dict
         _draw_fit_text(draw, "No new records.", (518, 924, 685, 942), fonts["small_bold"], INK, min_size=9)
         return
     labels = ("Fastest Winner:", "Fastest Overall Time:", "Most Crashes In Race:", "Most Overtakes In Race:", "Most Chaotic Race:")
-    row_y = (914, 939, 963, 988, 1013)
-    for label, line, y in zip(labels, record_lines, row_y):
+    for label, line, y in zip(labels, record_lines, TEMPLATE_RECORD_ROW_Y):
         value = _clean(line).replace(label, "").strip()
         _draw_fit_text(draw, value or _clean(line), (525, y, 682, y + 18), fonts["small_bold"], INK, min_size=9)
 
@@ -996,8 +998,7 @@ def _draw_template_standings_panel(
     image.paste(texture, (379, 748))
 
     # Rows 1–5 line up with the pre-printed red ranking numbers.
-    row_y = (650, 671, 692, 713, 734)
-    for line, y in zip(_template_standings_lines(ordered), row_y):
+    for line, y in zip(_template_standings_lines(ordered), TEMPLATE_STANDINGS_ROW_Y):
         _draw_fit_text(
             draw,
             line,
