@@ -79,3 +79,15 @@ The release workflow now runs the full regression suite on both Python 3.12 and 
 ## Competitive integrity
 
 No race-performance values are changed by this patch.
+
+
+## Driver Stats input safety
+
+The Create/Edit Team Driver Stats control now uses six fixed 1–8 dropdowns instead of a free-text comma-separated field.
+
+Discord permits only five full-width dropdown rows on one interaction surface, so the six stats are split into two pages:
+
+- Page 1: Nerve, Handling, Aggression
+- Page 2: Mechanics, Reflexes, Showmanship
+
+The builder starts at balanced 4/4/4/4/4/4, shows points used and remaining, and only offers values that keep the total at or below 24. Previous, Next, Balanced, Save and Cancel controls keep the flow inside the original team wizard.
