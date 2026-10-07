@@ -194,7 +194,7 @@ def _driver_stats_text(stats: DriverStats | None) -> str:
     if not stats:
         return (
             "Not set yet.\n"
-            "Use six numbers for: Nerve, Handling, Aggression, Mechanics, Reflexes, Showmanship.\n"
+            "Use the six dropdowns for Nerve, Handling, Aggression, Mechanics, Reflexes and Showmanship.\n"
             "Each stat can be 1-8. Total budget: 24."
         )
 
@@ -309,36 +309,175 @@ class TeamDetailsModal(ReliableModal):
         await self.wizard.refresh(interaction)
 
 
-class DriverStatsModal(ReliableModal):
-    def __init__(self, wizard: "TeamWizardView"):
-        super().__init__(title="Driver Stats")
-        self.wizard = wizard
-        default = ""
-        if wizard.state.stats:
-            stats = wizard.state.stats
-            default = f"{stats.nerve}, {stats.handling}, {stats.aggression}, {stats.mechanics}, {stats.reflexes}, {stats.showmanship}"
-        self.stats_input = discord.ui.TextInput(
-            label="Driver stat values",
-            placeholder="Nerve, Handling, Aggression, Mechanics, Reflexes, Showmanship. Example: 4,4,4,4,4,4",
-            default=default,
-            max_length=90,
+class DriverStatSelect(discord.ui.Select):
+    def __init__(self, view: "DriverStatsView", label: str, attr: str, row: int):
+        self.stats_view = view
+        self.attr = attr
+        current = int(view.values[attr])
+        other_total = view.total - current
+        max_allowed = max(1, min(8, 24 - other_total))
+        options = [
+            discord.SelectOption(
+                label=str(value),
+                value=str(value),
+                default=value == current,
+            )
+            for value in range(1, max_allowed + 1)
+        ]
+        super().__init__(
+            placeholder=f"{label}: {current}",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=row,
         )
-        self.add_item(self.stats_input)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        raw_parts = str(self.stats_input.value).replace("\n", ",").replace("/", ",").split(",")
-        try:
-            values = [int(part.strip()) for part in raw_parts if part.strip()]
-            if len(values) != 6:
-                raise ValueError("Enter six numbers: nerve, handling, aggression, mechanics, reflexes, showmanship.")
-            stats = DriverStats(*values)
-            stats.validate()
-        except ValueError as exc:
-            await interaction.response.send_message(f"Stats not saved: {exc}", ephemeral=True)
-            return
+    async def callback(self, interaction: discord.Interaction):
+        self.stats_view.values[self.attr] = int(self.values[0])
+        self.stats_view.rebuild_items()
+        await interaction.response.edit_message(embed=self.stats_view.embed(), view=self.stats_view)
 
+
+class DriverStatsView(ReliableView):
+    PAGE_STATS = (
+        DRIVER_STAT_LABELS[:3],
+        DRIVER_STAT_LABELS[3:],
+    )
+
+    def __init__(self, wizard: "TeamWizardView"):
+        super().__init__(timeout=600)
+        self.wizard = wizard
+        self.page = 0
+        if wizard.state.stats:
+            self.values = {
+                attr: int(getattr(wizard.state.stats, attr))
+                for _label, attr in DRIVER_STAT_LABELS
+            }
+        else:
+            self.values = {attr: 4 for _label, attr in DRIVER_STAT_LABELS}
+        self.rebuild_items()
+
+    @property
+    def total(self) -> int:
+        return sum(int(self.values[attr]) for _label, attr in DRIVER_STAT_LABELS)
+
+    @property
+    def remaining(self) -> int:
+        return max(0, 24 - self.total)
+
+    def embed(self) -> discord.Embed:
+        page_title = "Driving Style" if self.page == 0 else "Technical & Flair"
+        embed = discord.Embed(
+            title=f"Driver Stats — {page_title}",
+            description=(
+                "Choose each stat from the dropdowns. Values are limited to **1–8** and "
+                "choices that would push the driver over the **24-point budget** are not offered."
+            ),
+            color=discord.Color.blurple(),
+        )
+        lines = [
+            f"**{label}:** {self.values[attr]}"
+            for label, attr in DRIVER_STAT_LABELS
+        ]
+        embed.add_field(
+            name="Current Driver",
+            value="\n".join(lines),
+            inline=True,
+        )
+        embed.add_field(
+            name="Budget",
+            value=(
+                f"Used: **{self.total}/24**\n"
+                f"Remaining: **{self.remaining}**\n"
+                f"Page: **{self.page + 1}/2**"
+            ),
+            inline=True,
+        )
+        embed.set_footer(
+            text="At 24/24, lower one stat before increasing another. Balanced resets everything to 4."
+        )
+        return embed
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.wizard.owner_id:
+            return True
+        await interaction.response.send_message("This driver-stat builder belongs to another driver.", ephemeral=True)
+        return False
+
+    def rebuild_items(self) -> None:
+        self.clear_items()
+        for row, (label, attr) in enumerate(self.PAGE_STATS[self.page]):
+            self.add_item(DriverStatSelect(self, label, attr, row))
+
+        previous = discord.ui.Button(
+            label="Previous",
+            style=discord.ButtonStyle.secondary,
+            row=3,
+            disabled=self.page == 0,
+        )
+        previous.callback = self.previous_page
+        self.add_item(previous)
+
+        next_button = discord.ui.Button(
+            label="Next",
+            style=discord.ButtonStyle.primary,
+            row=3,
+            disabled=self.page == 1,
+        )
+        next_button.callback = self.next_page
+        self.add_item(next_button)
+
+        balanced = discord.ui.Button(
+            label="Balanced 4s",
+            style=discord.ButtonStyle.secondary,
+            row=3,
+        )
+        balanced.callback = self.reset_balanced
+        self.add_item(balanced)
+
+        save = discord.ui.Button(
+            label="Save Stats",
+            style=discord.ButtonStyle.success,
+            row=3,
+        )
+        save.callback = self.save_stats
+        self.add_item(save)
+
+        cancel = discord.ui.Button(
+            label="Cancel",
+            style=discord.ButtonStyle.danger,
+            row=3,
+        )
+        cancel.callback = self.cancel
+        self.add_item(cancel)
+
+    async def previous_page(self, interaction: discord.Interaction):
+        self.page = 0
+        self.rebuild_items()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    async def next_page(self, interaction: discord.Interaction):
+        self.page = 1
+        self.rebuild_items()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    async def reset_balanced(self, interaction: discord.Interaction):
+        self.values = {attr: 4 for _label, attr in DRIVER_STAT_LABELS}
+        self.rebuild_items()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    async def save_stats(self, interaction: discord.Interaction):
+        stats = DriverStats(
+            *(int(self.values[attr]) for _label, attr in DRIVER_STAT_LABELS)
+        )
+        stats.validate()
         self.wizard.state.stats = stats
-        await self.wizard.refresh(interaction)
+        self.wizard.update_controls()
+        await interaction.response.edit_message(embed=self.wizard.embed(), view=self.wizard)
+
+    async def cancel(self, interaction: discord.Interaction):
+        self.wizard.update_controls()
+        await interaction.response.edit_message(embed=self.wizard.embed(), view=self.wizard)
 
 
 class TeamWizardView(ReliableView):
@@ -384,7 +523,8 @@ class TeamWizardView(ReliableView):
 
     @discord.ui.button(label="Driver Stats", style=discord.ButtonStyle.primary)
     async def driver_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(DriverStatsModal(self))
+        view = DriverStatsView(self)
+        await interaction.response.edit_message(embed=view.embed(), view=view)
 
     @discord.ui.button(label="Create Team", style=discord.ButtonStyle.success)
     async def create_team(self, interaction: discord.Interaction, button: discord.ui.Button):

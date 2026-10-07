@@ -1,10 +1,10 @@
 {
   "version": "0.5.1",
   "tests": "PASS",
-  "test_count": 119,
+  "test_count": 124,
   "python_312": "PASS",
   "python_313": "PASS",
   "balance_lab": "PASS",
-  "verified_commit": "4cd250d1fe418bd1df8b417352216b9a607ac466",
-  "note": "Full regression suite passed on Python 3.12 and Python 3.13; full deterministic Balance Lab passed on the verified v0.5.1 feature head."
+  "verified_commit": "5dbcc74daf1310fe7388001306e75721d7c2fba7",
+  "note": "Full regression suite passed on Python 3.12 and Python 3.13; full deterministic Balance Lab passed after the guided Driver Stats dropdown UI update."
 }
