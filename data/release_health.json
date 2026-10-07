@@ -1,10 +1,10 @@
 {
   "version": "0.5.2a",
-  "tests": "PENDING",
-  "test_count": null,
-  "python_312": "PENDING",
-  "python_313": "PENDING",
-  "balance_lab": "PENDING",
-  "verified_commit": null,
-  "note": "Pending full v0.5.2a original Gazette template alignment verification."
+  "tests": "PASS",
+  "test_count": 140,
+  "python_312": "PASS",
+  "python_313": "PASS",
+  "balance_lab": "PASS",
+  "verified_commit": "93870590fd64ee64afe94be6f1eb855e64ca32e4",
+  "note": "Full regression suite passed on Python 3.12 and Python 3.13; full deterministic Balance Lab passed on the verified v0.5.2a original Gazette template alignment head."
 }
