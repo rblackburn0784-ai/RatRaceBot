@@ -624,6 +624,7 @@ class TournamentsCog(commands.Cog):
                     award_rewards=False,
                     reward_embeds_override=reward_embeds,
                     persisted_report=True,
+                    championship_race=schedule_race_number is not None,
                 )
             except (discord.HTTPException, OSError) as exc:
                 report_error = exc

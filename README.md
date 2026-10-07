@@ -32,6 +32,22 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - Shared UI error handling catches callback failures and gives drivers a useful response instead of a silent Discord interaction failure.
 
 
+## v0.5.2 Blacktop Gazette Polish
+
+v0.5.2 is presentation-only and fixes the newspaper overflow/misalignment seen with long race/story content.
+
+- Race metadata now lives in the masthead/stamp instead of consuming recap rows.
+- Exhibition/quick/demo races use **Race Order**; scheduled championship rounds keep **Final Standings**.
+- Gazette classification is capped at the **top five** while Discord still posts the full official classification separately.
+- Long story fields, team names and embed-derived copy are compacted before rendering.
+- Every panel now has strict line budgets plus normalized header height, padding and line spacing.
+- Template standings are redrawn cleanly so old pre-printed 6–10 rows cannot show through beneath the new top-five list.
+- Empty-state fallbacks are shorter to preserve alignment.
+- No race or progression balance values changed.
+
+See `GAZETTE_POLISH_v0.5.2.md`.
+
+
 ## v0.5.1 World Reliability Patch
 
 v0.5.1 adds no gameplay power. It hardens the persistent world for real multi-user seasons.

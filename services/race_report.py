@@ -31,6 +31,7 @@ async def send_race_report(
     award_rewards: bool = True,
     reward_embeds_override: list[discord.Embed] | None = None,
     persisted_report: bool | None = None,
+    championship_race: bool = False,
 ) -> None:
     result_embed = Embeds.results(results, title=title)
     final_embed = final_embed or classification_embed(results, events, title)
@@ -71,6 +72,7 @@ async def send_race_report(
         rivalry_embed=story_embed,
         reward_embeds=reward_embeds,
         gazette_story=gazette_story,
+        championship_race=championship_race,
     )
 
     # Official classification, new records and world decisions are explicit even
