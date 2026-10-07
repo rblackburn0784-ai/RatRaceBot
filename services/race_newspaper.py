@@ -25,6 +25,8 @@ WIDTH = 1450
 HEIGHT = 1900
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_PATH = PROJECT_ROOT / "assets" / "newspaper" / "newspaper_template.png"
+TEMPLATE_SIZE = (1103, 1426)
+TEMPLATE_BLUE = (28, 41, 54)
 PAPER = (237, 222, 190)
 INK = (30, 28, 23)
 FADED = (88, 76, 58)
@@ -216,7 +218,11 @@ def _template_image():
     if not TEMPLATE_PATH.exists():
         return None
     try:
-        return Image.open(TEMPLATE_PATH).convert("RGB")
+        image = Image.open(TEMPLATE_PATH).convert("RGB")
+        if image.size != TEMPLATE_SIZE:
+            resampling = getattr(Image, "Resampling", Image).LANCZOS
+            image = image.resize(TEMPLATE_SIZE, resampling)
+        return image
     except OSError:
         return None
 
@@ -272,7 +278,8 @@ def _draw_template_report(
         line_height=28,
         min_size=10,
     )
-    _redraw_template_standings_panel(
+    _draw_template_standings_panel(
+        image,
         draw,
         ordered,
         template_fonts,
@@ -312,38 +319,38 @@ def _draw_template_report(
     )
     _draw_lines(
         draw,
-        (238, 1118, 408, 1284),
+        (238, 1106, 408, 1278),
         _panel_lines(
             [gazette_story["rivalry_story"]] if gazette_story.get("rivalry_story") else _embed_lines(rivalry_embed, "No active grudge.", max_lines=PANEL_LIMITS["rivalry"]),
             PANEL_LIMITS["rivalry"],
             78,
         ),
         template_fonts["small_bold"],
-        line_height=18,
+        line_height=39,
         max_rendered_lines=PANEL_LIMITS["rivalry"],
     )
     _draw_lines(
         draw,
-        (472, 1115, 716, 1288),
+        (468, 1105, 714, 1278),
         _panel_lines(
             _embed_lines(_find_embed(reward_embeds, "New Achievements"), "No new badges.", max_lines=PANEL_LIMITS["achievements"]),
             PANEL_LIMITS["achievements"],
             70,
         ),
         template_fonts["small_bold"],
-        line_height=21,
+        line_height=28,
         max_rendered_lines=PANEL_LIMITS["achievements"],
     )
     _draw_lines(
         draw,
-        (760, 1146, 1070, 1278),
+        (760, 1140, 1068, 1274),
         _panel_lines(
             [gazette_story["sponsor_story"]] if gazette_story.get("sponsor_story") else _embed_lines(_find_embed(reward_embeds, "Sponsor Offers"), "No sponsor movement.", max_lines=PANEL_LIMITS["sponsors"]),
             PANEL_LIMITS["sponsors"],
             88,
         ),
         template_fonts["small_bold"],
-        line_height=22,
+        line_height=40,
         max_rendered_lines=PANEL_LIMITS["sponsors"],
     )
     _draw_template_prediction(draw, prediction_embed, winner, template_fonts)
@@ -392,26 +399,35 @@ def _race_label(title: str) -> str:
 
 def _draw_stamp(draw, title: str, track_name: str, weather_name: str, fonts: dict[str, object]) -> None:
     stamp_title = _race_label(title)
-    _centered_fit_shrink(draw, stamp_title.upper(), (960, 36, 1082, 66), fonts["stamp"], (236, 225, 198), min_size=10)
-    _centered_fit_shrink(draw, track_name.upper(), (965, 96, 1078, 119), fonts["stamp"], INK, min_size=9)
-    _centered_fit_shrink(draw, weather_name.upper(), (965, 122, 1078, 142), fonts["stamp"], INK, min_size=9)
+    _centered_fit_shrink(
+        draw,
+        stamp_title.upper(),
+        (949, 34, 1067, 58),
+        fonts["stamp"],
+        (236, 225, 198),
+        min_size=9,
+    )
+    _centered_fit_shrink(draw, _truncate(track_name.upper(), 18), (950, 94, 1066, 114), fonts["stamp"], INK, min_size=9)
+    _centered_fit_shrink(draw, _truncate(weather_name.upper(), 16), (950, 116, 1066, 137), fonts["stamp"], INK, min_size=9)
 
 
 def _draw_award_values(draw, ordered: list[RaceResult], fonts: dict[str, object]) -> None:
+    # Baselines follow the eight labels already printed in the original artwork.
     awards = (
-        ("overtakes", 660),
-        ("crashes", 683),
-        ("illegal_moves", 706),
-        ("last_minute_wins", 729),
-        ("near_misses", 752),
-        ("pit_stops", 776),
-        ("damage", 803),
-        ("damage", 828),
+        ("overtakes", 651),
+        ("crashes", 676),
+        ("illegal_moves", 698),
+        ("last_minute_wins", 722),
+        ("near_misses", 747),
+        ("pit_stops", 772),
+        ("damage", 798),
+        ("damage", 823),
     )
     for key, y in awards:
         leader = max(ordered, key=lambda result: (int(getattr(result, key, 0)), result.points))
         value = int(getattr(leader, key, 0))
-        _draw_fit_text(draw, f"{leader.team_name} - {value}", (895, y, 1074, y + 18), fonts["body_bold"], INK, min_size=10)
+        text = f"{_short_name(leader.team_name, 18)} — {value}"
+        _draw_fit_text(draw, text, (885, y, 1070, y + 18), fonts["body_bold"], INK, min_size=10)
 
 
 def _draw_template_records(draw, reward_embeds: list[discord.Embed], fonts: dict[str, object]) -> None:
@@ -425,11 +441,10 @@ def _draw_template_records(draw, reward_embeds: list[discord.Embed], fonts: dict
         _draw_fit_text(draw, "No new records.", (518, 924, 685, 942), fonts["small_bold"], INK, min_size=9)
         return
     labels = ("Fastest Winner:", "Fastest Overall Time:", "Most Crashes In Race:", "Most Overtakes In Race:", "Most Chaotic Race:")
-    y = 924
-    for label, line in zip(labels, record_lines):
+    row_y = (914, 939, 963, 988, 1013)
+    for label, line, y in zip(labels, record_lines, row_y):
         value = _clean(line).replace(label, "").strip()
-        _draw_fit_text(draw, value or _clean(line), (528, y, 684, y + 18), fonts["small_bold"], INK, min_size=9)
-        y += 25
+        _draw_fit_text(draw, value or _clean(line), (525, y, 682, y + 18), fonts["small_bold"], INK, min_size=9)
 
 
 def _draw_template_quote(draw, reward_embeds: list[discord.Embed], winner: RaceResult, fonts: dict[str, object]) -> None:
@@ -443,17 +458,17 @@ def _draw_template_quote(draw, reward_embeds: list[discord.Embed], winner: RaceR
 
     detail_lines = [line for line in lines[1:] if ":" in line]
     details = {line.split(":", 1)[0].strip(): line.split(":", 1)[1].strip() for line in detail_lines}
-    _draw_fit_text(draw, details.get("Driver", winner.driver_name), (780, 994, 932, 1010), fonts["small_bold"], INK, min_size=9)
-    _draw_fit_text(draw, f"P{winner.position}", (1032, 994, 1080, 1010), fonts["small_bold"], INK, min_size=9)
-    _draw_fit_text(draw, details.get("Trait Flavor", "Race Winner"), (800, 1019, 1074, 1035), fonts["small_bold"], INK, min_size=9)
-    _draw_fit_text(draw, details.get("Reputation", "Front Runner"), (817, 1040, 1074, 1056), fonts["small_bold"], INK, min_size=9)
+    _draw_fit_text(draw, details.get("Driver", winner.driver_name), (760, 990, 930, 1007), fonts["small_bold"], INK, min_size=9)
+    _draw_fit_text(draw, f"P{winner.position}", (1012, 990, 1068, 1007), fonts["small_bold"], INK, min_size=9)
+    _draw_fit_text(draw, details.get("Trait Flavor", "Race Winner"), (790, 1011, 1068, 1028), fonts["small_bold"], INK, min_size=9)
+    _draw_fit_text(draw, details.get("Reputation", "Front Runner"), (785, 1030, 1068, 1047), fonts["small_bold"], INK, min_size=9)
 
 
 def _draw_template_prediction(draw, prediction_embed: discord.Embed | None, winner: RaceResult, fonts: dict[str, object]) -> None:
     lines = _embed_lines(prediction_embed, "No correct picks.", max_lines=PANEL_LIMITS["prediction"], max_chars=64)
     correct = lines[-1] if lines else "No correct picks."
-    _draw_fit_text(draw, winner.team_name, (96, 1366, 300, 1384), fonts["body_bold"], INK, min_size=11)
-    _draw_fit_text(draw, _clean(correct), (126, 1390, 314, 1408), fonts["body_bold"], INK, min_size=11)
+    _draw_fit_text(draw, _short_name(winner.team_name, 24), (100, 1349, 286, 1365), fonts["body_bold"], INK, min_size=10)
+    _draw_fit_text(draw, _clean(correct), (126, 1378, 286, 1394), fonts["body_bold"], INK, min_size=10)
 
 
 def _draw_lines(
@@ -728,7 +743,11 @@ def _standings_lines(ordered: list[RaceResult]) -> list[str]:
 
 
 def _template_standings_lines(ordered: list[RaceResult]) -> list[str]:
-    return _standings_lines(ordered)
+    lines = []
+    for result in ordered[:PANEL_LIMITS["standings"]]:
+        status = "DSQ" if result.disqualified else "DNF" if result.dnf else f"{result.points} pts"
+        lines.append(f"{_short_name(result.team_name, 25)} — {status}")
+    return lines
 
 
 def _award_lines(ordered: list[RaceResult]) -> list[str]:
@@ -947,36 +966,46 @@ def _draw_template_list(
         y += line_height
 
 
-def _redraw_template_standings_panel(
+def _draw_template_standings_panel(
+    image,
     draw,
     ordered: list[RaceResult],
     fonts: dict[str, object],
     title: str,
 ) -> None:
-    # The supplied template historically contained ten pre-printed ranking rows.
-    # Mask the standings body so a top-five list cannot leave stray 6–10 markers.
-    panel = (365, 608, 704, 852)
-    header = (368, 611, 701, 642)
-    body = (371, 646, 698, 848)
-    draw.rectangle(panel, fill=PAPER, outline=BOX, width=2)
-    draw.rectangle(header, fill=BLUE)
-    _centered_fit_shrink(
-        draw,
-        title.upper(),
-        (header[0] + 5, header[1] + 1, header[2] - 5, header[3] - 1),
-        fonts["section"],
-        (236, 225, 198),
-        min_size=14,
-    )
-    _draw_template_list(
-        draw,
-        body,
-        _template_standings_lines(ordered),
-        fonts["body_bold"],
-        max_lines=PANEL_LIMITS["standings"],
-        line_height=34,
-        min_size=11,
-    )
+    """Fill the fixed standings slots in the canonical 1103x1426 artwork."""
+    # Preserve the printed border, stars and paper grain. Only the central title
+    # text is covered for exhibitions, while championship papers keep the
+    # original FINAL STANDINGS artwork untouched.
+    if title != "FINAL STANDINGS":
+        draw.rectangle((426, 610, 650, 639), fill=TEMPLATE_BLUE)
+        _centered_fit_shrink(
+            draw,
+            title.upper(),
+            (432, 611, 644, 638),
+            fonts["section"],
+            (236, 225, 198),
+            min_size=15,
+        )
+
+    # The original artwork prints 1–10. v0.5.2 intentionally shows only the
+    # newspaper top five, so cover just the 6–10 number column with a clean
+    # texture sample from the same standings body instead of painting the whole
+    # panel a flat colour.
+    texture = image.crop((630, 748, 670, 848))
+    image.paste(texture, (379, 748))
+
+    # Rows 1–5 line up with the pre-printed red ranking numbers.
+    row_y = (650, 671, 692, 713, 734)
+    for line, y in zip(_template_standings_lines(ordered), row_y):
+        _draw_fit_text(
+            draw,
+            line,
+            (410, y, 688, y + 18),
+            fonts["body_bold"],
+            INK,
+            min_size=10,
+        )
 
 
 def _clean(text: str) -> str:
