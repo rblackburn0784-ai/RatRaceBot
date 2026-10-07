@@ -41,7 +41,9 @@ PANEL_LIMITS = {
     "recap": 5,
     "standings": 5,
     "records": 5,
-    "quote": 2,
+    "awards": 8,
+    "hype": 6,
+    "quote": 5,
     "scandal": 4,
     "rivalry": 4,
     "achievements": 5,
@@ -288,7 +290,15 @@ def _draw_template_report(
 
     _draw_template_records(draw, reward_embeds, template_fonts)
     if gazette_story.get("pit_lane_quote"):
-        _draw_lines(draw, (742, 916, 1070, 1058), [gazette_story["pit_lane_quote"]], template_fonts["small_bold"], line_height=18, center=True)
+        _draw_lines(
+            draw,
+            (742, 916, 1070, 1058),
+            [gazette_story["pit_lane_quote"]],
+            template_fonts["small_bold"],
+            line_height=20,
+            center=True,
+            max_rendered_lines=2,
+        )
     else:
         _draw_template_quote(draw, reward_embeds, winner, template_fonts)
     _draw_lines(
@@ -298,6 +308,7 @@ def _draw_template_report(
         template_fonts["small"],
         line_height=14,
         center=True,
+        max_rendered_lines=PANEL_LIMITS["scandal"],
     )
     _draw_lines(
         draw,
@@ -309,6 +320,7 @@ def _draw_template_report(
         ),
         template_fonts["small_bold"],
         line_height=18,
+        max_rendered_lines=PANEL_LIMITS["rivalry"],
     )
     _draw_lines(
         draw,
@@ -332,6 +344,7 @@ def _draw_template_report(
         ),
         template_fonts["small_bold"],
         line_height=22,
+        max_rendered_lines=PANEL_LIMITS["sponsors"],
     )
     _draw_template_prediction(draw, prediction_embed, winner, template_fonts)
     _centered_fit_shrink(
@@ -539,11 +552,11 @@ def _draw_masthead(
     _centered(draw, "* ALL THE DIRT. NONE OF THE FILTER. *", (0, 154, WIDTH, 192), fonts["section"], INK)
     draw.line((34, 196, WIDTH - 34, 196), fill=INK, width=3)
 
-    stamp_box = (WIDTH - 210, 38, WIDTH - 34, 142)
+    stamp_box = (WIDTH - 230, 38, WIDTH - 34, 142)
     draw.rectangle(stamp_box, outline=RED, width=4)
-    _centered(draw, "RACE", (stamp_box[0], 48, stamp_box[2], 75), fonts["section"], RED)
-    _centered(draw, "EDITION", (stamp_box[0], 80, stamp_box[2], 106), fonts["section"], RED)
-    _centered(draw, weather_name.upper()[:18], (stamp_box[0], 112, stamp_box[2], 136), fonts["small"], INK)
+    _centered_fit(draw, _race_label(title).upper(), (stamp_box[0] + 5, 45, stamp_box[2] - 5, 73), fonts["small"], RED)
+    _centered_fit(draw, _truncate(track_name.upper(), 20), (stamp_box[0] + 5, 79, stamp_box[2] - 5, 105), fonts["small"], INK)
+    _centered_fit(draw, _truncate(weather_name.upper(), 18), (stamp_box[0] + 5, 111, stamp_box[2] - 5, 137), fonts["small"], INK)
 
     draw.rectangle((34, 38, 190, 142), outline=INK, width=3)
     _centered(draw, "SPECIAL", (34, 48, 190, 76), fonts["section"], RED)
@@ -729,7 +742,7 @@ def _award_lines(ordered: list[RaceResult]) -> list[str]:
     for key, label in awards:
         leader = max(ordered, key=lambda result: (int(getattr(result, key, 0)), result.points))
         value = int(getattr(leader, key, 0))
-        lines.append(f"{label}: {leader.team_name} - {value}")
+        lines.append(f"{label}: {_short_name(leader.team_name, 24)} — {value}")
     return lines
 
 
@@ -741,7 +754,7 @@ def _hype_title(results: list[RaceResult], events: list[RaceEvent]) -> str:
 def _hype_lines(results: list[RaceResult], events: list[RaceEvent], title: str) -> list[str]:
     score, _label = hype_score(results, events)
     return [
-        f"{title} scored {score} hype.",
+        f"{_race_label(title)} — hype {score}.",
         f"Overtakes: {sum(result.overtakes for result in results)}",
         f"Crashes: {sum(result.crashes for result in results)}",
         f"Illegal moves: {sum(result.illegal_moves for result in results)}",
@@ -871,8 +884,12 @@ def _panel_limit_for_title(title: str) -> int:
         return PANEL_LIMITS["standings"]
     if "RECORD" in key:
         return PANEL_LIMITS["records"]
+    if "AWARD" in key:
+        return PANEL_LIMITS["awards"]
+    if "CROWD HYPE" in key:
+        return PANEL_LIMITS["hype"]
     if "QUOTE" in key:
-        return 5
+        return PANEL_LIMITS["quote"]
     if "SCANDAL" in key:
         return PANEL_LIMITS["scandal"]
     if "RIVALRY" in key:
