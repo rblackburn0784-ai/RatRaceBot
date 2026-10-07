@@ -1,10 +1,10 @@
 {
-  "version": "0.5.1",
-  "tests": "PASS",
-  "test_count": 129,
-  "python_312": "PASS",
-  "python_313": "PASS",
-  "balance_lab": "PASS",
-  "verified_commit": "39dba1d2a2dd9de8839d339fca075571a25e07d6",
-  "note": "Full regression suite passed on Python 3.12 and Python 3.13; full deterministic Balance Lab passed after the discord.py admin selector compatibility fix."
+  "version": "0.5.2",
+  "tests": "PENDING",
+  "test_count": null,
+  "python_312": "PENDING",
+  "python_313": "PENDING",
+  "balance_lab": "PENDING",
+  "verified_commit": null,
+  "note": "Pending full v0.5.2 Gazette polish verification."
 }
