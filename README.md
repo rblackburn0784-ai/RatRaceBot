@@ -32,6 +32,22 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - Shared UI error handling catches callback failures and gives drivers a useful response instead of a silent Discord interaction failure.
 
 
+## v0.5.2a Original Gazette Template Alignment
+
+v0.5.2a aligns the renderer to the supplied **1103×1426** original Blacktop Gazette artwork.
+
+- Preserves the original paper grain and printed panel artwork instead of repainting the standings box.
+- Writes the top five beside the template's baked 1–5 ranking numbers and texture-masks only the unused 6–10 numbers.
+- Keeps the original **Final Standings** heading for championship races; exhibitions replace only the central title with **Race Order**.
+- Aligns the eight race-award values and five track-record values to the original printed labels.
+- Moves Winner's Quote metadata and Prediction Results values onto their actual printed baselines.
+- Rivalry, achievement and sponsor text now follows the template's printed row/line spacing.
+- A scaled template copy is normalised to the canonical 1103×1426 size before rendering.
+- No gameplay or balance logic changed.
+
+See `GAZETTE_TEMPLATE_ALIGNMENT_v0.5.2a.md`.
+
+
 ## v0.5.2 Blacktop Gazette Polish
 
 v0.5.2 is presentation-only and fixes the newspaper overflow/misalignment seen with long race/story content.

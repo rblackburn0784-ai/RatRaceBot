@@ -1,6 +1,6 @@
-Rat Rod Racing Bot v0.5.2 — Blacktop Gazette Polish
+Rat Rod Racing Bot v0.5.2a — Original Gazette Template Alignment
 Release date: 2026-10-07
 
-Presentation-only update for Blacktop Gazette layout stability: fixed panel budgets, compact copy,
-Race Order for exhibitions, top-five classification, normalized spacing and shorter fallbacks.
-See GAZETTE_POLISH_v0.5.2.md.
+Hotfix for the canonical 1103x1426 Blacktop Gazette artwork: texture-preserving standings,
+exact baked-label row alignment, corrected quote/prediction slots and deterministic template scaling.
+See GAZETTE_TEMPLATE_ALIGNMENT_v0.5.2a.md.

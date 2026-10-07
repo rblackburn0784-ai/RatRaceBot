@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main, v0.5.2-gazette-polish]
+    branches: [main, v0.5.2a-template-alignment]
 
 jobs:
   test:
