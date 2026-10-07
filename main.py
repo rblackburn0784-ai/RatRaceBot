@@ -12,6 +12,7 @@ from storage.database import Database
 from services.race_activity import RaceActivityRegistry
 from services.recovery import RecoveryManager
 from services.ui_safety import safe_reply
+from services.admin_selector_compat import apply_admin_selector_compat
 
 COGS = [
     "cogs.admin",
@@ -40,6 +41,7 @@ class RatRodBot(commands.Bot):
         await self.recovery.init()
         for cog in COGS:
             await self.load_extension(cog)
+        apply_admin_selector_compat()
         if self.settings.guild_id:
             guild = discord.Object(id=self.settings.guild_id)
             self.tree.copy_global_to(guild=guild)
