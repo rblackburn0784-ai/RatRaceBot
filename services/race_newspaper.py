@@ -116,7 +116,7 @@ def render_race_newspaper(
     _section(
         draw,
         (490, 815, 915, 1145),
-        "FINAL STANDINGS" if championship_race else "RACE ORDER",
+        _standings_heading(championship_race),
         _standings_lines(ordered),
         fonts,
         BLUE,
@@ -276,7 +276,7 @@ def _draw_template_report(
         draw,
         ordered,
         template_fonts,
-        "FINAL STANDINGS" if championship_race else "RACE ORDER",
+        _standings_heading(championship_race),
     )
     _draw_award_values(draw, ordered, template_fonts)
 
@@ -376,6 +376,10 @@ def _template_fonts() -> dict[str, object]:
 
 def _headline(winner: RaceResult, track_name: str) -> str:
     return f"{winner.team_name} Take {track_name}"
+
+
+def _standings_heading(championship_race: bool) -> str:
+    return "FINAL STANDINGS" if championship_race else "RACE ORDER"
 
 
 def _race_label(title: str) -> str:
