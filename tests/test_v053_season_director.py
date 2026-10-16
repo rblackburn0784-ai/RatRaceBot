@@ -117,6 +117,33 @@ class SeasonDirectorDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertGreater(race_id, 0)
 
+    async def test_existing_scheduled_race_backfills_operation_state_on_init(self):
+        race_id = await self.db.save_tournament_race(
+            self.tid,
+            "neon_mile",
+            "legacy-round",
+            [],
+            results_for(self.teams),
+            schedule_race_number=1,
+        )
+        await self.db.execute(
+            "INSERT OR IGNORE INTO race_processing(race_id) VALUES (?)",
+            (race_id,),
+        )
+        await self.db.execute(
+            "DELETE FROM season_race_state WHERE tournament_id=? AND round_number=1",
+            (self.tid,),
+        )
+        self.assertIsNone(await self.db.latest_season_race_state(self.tid))
+        await self.db.init()
+        state = await self.db.latest_season_race_state(self.tid)
+        self.assertEqual(state["phase"], "legacy_imported")
+        self.assertEqual(int(state["race_id"]), race_id)
+        self.assertEqual(int(state["race_simulated"]), 1)
+        self.assertEqual(int(state["standings_updated"]), 1)
+        self.assertEqual(int(state["rewards_processed"]), 1)
+        self.assertEqual(int(state["gazette_generated"]), 0)
+
     async def test_round_operation_state_tracks_each_stage(self):
         await self.db.mark_season_race_state(
             self.tid, 1, "neon_mile", phase="simulated", race_simulated=True
