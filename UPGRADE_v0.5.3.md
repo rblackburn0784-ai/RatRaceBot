@@ -19,6 +19,8 @@ v0.5.3 adds two idempotent tables:
 
 Existing races, standings and Season History are not rewritten.
 
+Existing scheduled championship races are backfilled into `season_race_state` on first startup. Simulation/standings are marked complete, rewards are marked complete when the existing `race_processing` record proves they ran, and Gazette generation remains explicitly unknown because pre-v0.5.3 releases did not persist that milestone.
+
 ## Paused seasons
 
 A paused championship is considered active for the single-season rule and team locking. It does not permit new races until resumed.
