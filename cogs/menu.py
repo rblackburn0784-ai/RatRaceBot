@@ -435,6 +435,7 @@ class MainMenuView(ReliableView):
         for key, label, row, style in buttons:
             self.add_item(MenuButton(key, label, row, style))
         if show_admin:
+            self.add_item(MenuButton("season_director", "Season Director", 3, discord.ButtonStyle.success))
             self.add_item(MenuButton("admin_panel", "Admin Panel", 3, discord.ButtonStyle.danger))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -478,6 +479,13 @@ class MainMenuView(ReliableView):
             await self.cog.send_world_hub_for_team(select_interaction, team)
 
         await self._with_team(interaction, open_world)
+
+    async def _handle_season_director(self, interaction: discord.Interaction) -> None:
+        tournaments_cog = self.cog.tournaments_cog()
+        if not tournaments_cog:
+            await interaction.response.send_message("Tournament tools are not loaded.", ephemeral=True)
+            return
+        await tournaments_cog.send_season_director(interaction)
 
     async def _handle_team_wizard(self, interaction: discord.Interaction) -> None:
         teams_cog = self.cog.teams_cog()
