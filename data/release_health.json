@@ -1,10 +1,10 @@
 {
   "version": "0.5.3",
-  "tests": "PENDING",
-  "test_count": null,
-  "python_312": "PENDING",
-  "python_313": "PENDING",
-  "balance_lab": "PENDING",
-  "verified_commit": null,
-  "note": "Pending full v0.5.3 Season Control & Administration verification."
+  "tests": "PASS",
+  "test_count": 148,
+  "python_312": "PASS",
+  "python_313": "PASS",
+  "balance_lab": "PASS",
+  "verified_commit": "d3886b6f44f1eda5db639937898f0322894e1d73",
+  "note": "Full regression suite passed on Python 3.12 and Python 3.13; full deterministic Balance Lab passed on the verified v0.5.3 Season Control & Administration feature head."
 }
