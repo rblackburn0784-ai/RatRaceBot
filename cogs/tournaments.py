@@ -1017,6 +1017,15 @@ class TournamentsCog(commands.Cog):
                         schedule_race_number=schedule_race_number,
                     )
                 except ValueError as exc:
+                    if schedule_race_number is not None:
+                        await self.bot.db.mark_season_race_state(
+                            tournament_id,
+                            int(schedule_race_number),
+                            track_key,
+                            phase="save_error",
+                            race_simulated=True,
+                            error_text=f"Race simulated but could not be saved: {exc}",
+                        )
                     await interaction.channel.send(f"Tournament race was not saved: {exc}")
                     return
                 self.bot.recovery.bind_race_checkpoint(checkpoint_token, race_id)
@@ -1057,9 +1066,21 @@ class TournamentsCog(commands.Cog):
                             rewards_processed=True,
                             error_text="",
                         )
-                except Exception:
+                except Exception as exc:
                     logging.exception("Tournament post-race processing failed for race %s; restoring checkpoint", race_id)
                     await self.bot.recovery.undo_last_race()
+                    if schedule_race_number is not None:
+                        await self.bot.db.mark_season_race_state(
+                            tournament_id,
+                            int(schedule_race_number),
+                            track_key,
+                            phase="rewards_error",
+                            race_simulated=True,
+                            standings_updated=False,
+                            rewards_processed=False,
+                            gazette_generated=False,
+                            error_text=f"Post-race processing failed and the pre-race checkpoint was restored: {exc}",
+                        )
                     raise
 
             if schedule_race_number is None and await self.bot.db.tournament_schedule(tournament_id):
