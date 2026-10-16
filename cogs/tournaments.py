@@ -32,6 +32,11 @@ from services.race_rewards import process_race_rewards
 from services.race_snapshot import build_replay_snapshot
 from services.racing_world import rivalry_heat_map
 from services.scrutineering import scrutineering_embed
+from services.season_control import (
+    build_season_director_snapshot,
+    race_results_from_row,
+    season_director_embed,
+)
 from services.story import season_history_lines
 from services.streamer import RaceStreamer
 from services.team_ids import parse_team_ids_csv
@@ -359,6 +364,428 @@ class TournamentWizardView(OneShotReliableView):
         )
 
 
+class CorrectResultTeamSelect(discord.ui.Select):
+    def __init__(self, correction_view: "SeasonCorrectResultView"):
+        self.correction_view = correction_view
+        options = [
+            discord.SelectOption(
+                label=f"P{row.get('position', '?')} · {str(row.get('team_name', 'Team'))}"[:100],
+                value=str(row.get("team_id")),
+                description=str(row.get("driver_name", ""))[:100] or None,
+                default=correction_view.team_id == int(row.get("team_id", 0)),
+            )
+            for row in correction_view.results[:25]
+            if int(row.get("team_id", 0)) > 0
+        ]
+        super().__init__(placeholder="Choose team to correct", options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.correction_view.team_id = int(self.values[0])
+        current = next(
+            (row for row in self.correction_view.results if int(row.get("team_id", 0)) == self.correction_view.team_id),
+            None,
+        )
+        if current:
+            self.correction_view.new_position = int(current.get("position", 1))
+        self.correction_view.rebuild()
+        await interaction.response.edit_message(embed=self.correction_view.embed(), view=self.correction_view)
+
+
+class CorrectResultPositionSelect(discord.ui.Select):
+    def __init__(self, correction_view: "SeasonCorrectResultView"):
+        self.correction_view = correction_view
+        options = [
+            discord.SelectOption(
+                label=f"P{position}",
+                value=str(position),
+                default=correction_view.new_position == position,
+            )
+            for position in range(1, len(correction_view.results) + 1)
+        ]
+        super().__init__(placeholder="Corrected finishing position", options=options, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.correction_view.new_position = int(self.values[0])
+        self.correction_view.rebuild()
+        await interaction.response.edit_message(embed=self.correction_view.embed(), view=self.correction_view)
+
+
+class CorrectResultStatusSelect(discord.ui.Select):
+    def __init__(self, correction_view: "SeasonCorrectResultView"):
+        self.correction_view = correction_view
+        labels = (
+            ("keep", "Keep current status"),
+            ("finish", "Official finisher"),
+            ("dnf", "DNF"),
+            ("dsq", "Disqualified"),
+        )
+        options = [
+            discord.SelectOption(label=label, value=value, default=correction_view.status == value)
+            for value, label in labels
+        ]
+        super().__init__(placeholder="Corrected race status", options=options, row=2)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.correction_view.status = self.values[0]
+        self.correction_view.rebuild()
+        await interaction.response.edit_message(embed=self.correction_view.embed(), view=self.correction_view)
+
+
+class SeasonCorrectResultView(ReliableView):
+    def __init__(self, cog: "TournamentsCog", owner_id: int, tournament_id: int, race_row):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.tournament_id = int(tournament_id)
+        self.race_row = race_row
+        self.results = sorted(
+            race_results_from_row(race_row),
+            key=lambda row: int(row.get("position", 999)),
+        )
+        self.team_id: int | None = None
+        self.new_position = 1
+        self.status = "keep"
+        self.rebuild()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message("This result-correction panel belongs to another admin.", ephemeral=True)
+        return False
+
+    def rebuild(self) -> None:
+        self.clear_items()
+        self.add_item(CorrectResultTeamSelect(self))
+        self.add_item(CorrectResultPositionSelect(self))
+        self.add_item(CorrectResultStatusSelect(self))
+        apply_button = discord.ui.Button(
+            label="Review Correction",
+            style=discord.ButtonStyle.danger,
+            row=3,
+            disabled=self.team_id is None,
+        )
+        apply_button.callback = self.review
+        self.add_item(apply_button)
+        cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary, row=3)
+        cancel.callback = self.cancel
+        self.add_item(cancel)
+
+    def embed(self) -> discord.Embed:
+        race_id = int(self.race_row["id"])
+        selected = next(
+            (row for row in self.results if int(row.get("team_id", 0)) == int(self.team_id or 0)),
+            None,
+        )
+        current = (
+            f"P{selected.get('position')} · {selected.get('team_name')}"
+            if selected else "Choose a team"
+        )
+        embed = discord.Embed(
+            title=f"Correct Championship Result — Race #{race_id}",
+            description=(
+                "Correction rebuilds the latest persisted race from its pre-race checkpoint, "
+                "then reapplies standings and progression exactly once."
+            ),
+            color=discord.Color.red(),
+        )
+        embed.add_field(name="Selected", value=current, inline=False)
+        embed.add_field(name="New Position", value=f"P{self.new_position}", inline=True)
+        embed.add_field(name="Status", value=self.status.upper(), inline=True)
+        embed.set_footer(text="Only the latest recoverable persisted race can be corrected safely.")
+        return embed
+
+    async def review(self, interaction: discord.Interaction) -> None:
+        if self.team_id is None:
+            await interaction.response.send_message("Choose a team first.", ephemeral=True)
+            return
+        race_id = int(self.race_row["id"])
+
+        async def apply(confirm_interaction: discord.Interaction):
+            snapshot = await self.cog.bot.race_activity.snapshot()
+            if snapshot["active_team_ids"] or snapshot["lobby_team_ids"]:
+                await confirm_interaction.response.edit_message(
+                    content="Correction is blocked while a race or lobby is active.",
+                    embed=None,
+                    view=None,
+                )
+                return
+            try:
+                result = await self.cog.bot.recovery.correct_latest_result(
+                    race_id,
+                    int(self.team_id),
+                    int(self.new_position),
+                    self.status,
+                )
+            except Exception as exc:
+                await confirm_interaction.response.edit_message(
+                    content=f"Result was not corrected: {exc}",
+                    embed=None,
+                    view=None,
+                )
+                return
+            round_number = self.race_row["schedule_race_number"]
+            if round_number is not None:
+                await self.cog.bot.db.mark_season_race_state(
+                    self.tournament_id,
+                    int(round_number),
+                    str(self.race_row["track_key"]),
+                    race_id=race_id,
+                    phase="corrected",
+                    race_simulated=True,
+                    standings_updated=True,
+                    rewards_processed=True,
+                    gazette_generated=False,
+                    error_text="Official result corrected; Gazette image reflects the pre-correction result until regenerated.",
+                )
+            await audit_log(
+                self.cog.bot,
+                "Season Result Corrected",
+                f"Tournament #{self.tournament_id} race #{race_id}: team #{self.team_id} -> P{self.new_position} {self.status}",
+                confirm_interaction.user,
+            )
+            await confirm_interaction.response.edit_message(
+                content=(
+                    f"Race #{race_id} corrected safely. Standings/progression were rebuilt. "
+                    "Season Director now flags the Gazette as needing regeneration."
+                ),
+                embed=None,
+                view=None,
+            )
+
+        confirm = ConfirmView(
+            interaction.user.id,
+            "Correct Championship Result",
+            apply,
+        )
+        await interaction.response.send_message(
+            content=(
+                f"Confirm correction of Race #{race_id}: team #{self.team_id} → "
+                f"P{self.new_position}, status **{self.status.upper()}**?"
+            ),
+            view=confirm,
+            ephemeral=True,
+        )
+
+    async def cancel(self, interaction: discord.Interaction) -> None:
+        self._disable()
+        await interaction.response.edit_message(content="Result correction cancelled.", embed=None, view=self)
+
+
+class SeasonDirectorView(ReliableView):
+    def __init__(self, cog: "TournamentsCog", owner_id: int, snapshot: dict):
+        super().__init__(timeout=900)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.snapshot = snapshot
+        self.tournament_id = int(snapshot["tournament"]["id"])
+        self.rebuild()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message("This Season Director belongs to another admin.", ephemeral=True)
+        return False
+
+    def rebuild(self) -> None:
+        self.clear_items()
+        status = str(self.snapshot["tournament"]["status"])
+        next_entry = self.snapshot["next_entry"]
+        scoring_races = sum(
+            1 for race in self.snapshot["races"] if int(race["championship_round"]) == 1
+        )
+
+        controls = [
+            ("start_next", "▶ Start Next Race", discord.ButtonStyle.success, 0, status != "open" or next_entry is None),
+            ("correct", "🛠 Correct Result", discord.ButtonStyle.secondary, 0, not self.snapshot["races"]),
+            ("refresh", "↻ Refresh", discord.ButtonStyle.primary, 0, False),
+            ("pause", "⏸ Pause Season", discord.ButtonStyle.secondary, 1, status != "open"),
+            ("resume", "▶ Resume Season", discord.ButtonStyle.success, 1, status != "paused"),
+            ("cancel_empty", "🛑 Cancel Empty", discord.ButtonStyle.danger, 1, status not in {"open", "paused"} or scoring_races > 0),
+            ("end", "🏁 End Season", discord.ButtonStyle.danger, 2, status not in {"open", "paused"} or scoring_races == 0),
+            ("reopen", "♻ Reopen Season", discord.ButtonStyle.danger, 2, status not in {"closed", "cancelled"}),
+            ("championship", "🏆 Championship Hub", discord.ButtonStyle.secondary, 2, False),
+        ]
+        for key, label, style, row, disabled in controls:
+            button = discord.ui.Button(label=label, style=style, row=row, disabled=disabled)
+            button.callback = self._callback(key)
+            self.add_item(button)
+
+    def _callback(self, key: str):
+        async def callback(interaction: discord.Interaction):
+            handler = getattr(self, f"handle_{key}")
+            await handler(interaction)
+        return callback
+
+    async def refresh_snapshot(self) -> None:
+        self.snapshot = await build_season_director_snapshot(self.cog.bot.db, self.tournament_id)
+        self.rebuild()
+
+    async def handle_refresh(self, interaction: discord.Interaction) -> None:
+        await self.refresh_snapshot()
+        await interaction.response.edit_message(embed=season_director_embed(self.snapshot), view=self)
+
+    async def handle_start_next(self, interaction: discord.Interaction) -> None:
+        await self.refresh_snapshot()
+        if str(self.snapshot["tournament"]["status"]) != "open":
+            await interaction.response.send_message("Resume the season before starting another round.", ephemeral=True)
+            return
+        next_entry = self.snapshot["next_entry"]
+        if not next_entry:
+            await interaction.response.send_message("No scheduled round remains.", ephemeral=True)
+            return
+        team_ids = await self.cog.bot.db.tournament_team_ids(self.tournament_id)
+        await self.cog.send_tournament_preflight(
+            interaction,
+            self.tournament_id,
+            str(next_entry["track_key"]),
+            team_ids,
+            title_prefix=f"Scheduled Race {int(next_entry['race_number'])}",
+            post_final_awards=int(next_entry["race_number"]) == int(self.snapshot["total_rounds"]),
+            schedule_race_number=int(next_entry["race_number"]),
+        )
+
+    async def handle_correct(self, interaction: discord.Interaction) -> None:
+        races = await self.cog.bot.db.tournament_races(self.tournament_id, championship_only=True)
+        if not races:
+            await interaction.response.send_message("No championship result exists to correct.", ephemeral=True)
+            return
+        race_row = races[-1]
+        latest = await self.cog.bot.recovery.latest_race()
+        if not latest or int(latest["id"]) != int(race_row["id"]):
+            await interaction.response.send_message(
+                "The latest championship race is not the latest persisted race, so conservative recovery will not rewrite it. "
+                "Correct the latest race first or use recovery tools after reviewing the intervening race.",
+                ephemeral=True,
+            )
+            return
+        view = SeasonCorrectResultView(self.cog, interaction.user.id, self.tournament_id, race_row)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+    async def handle_pause(self, interaction: discord.Interaction) -> None:
+        activity = await self.cog.bot.race_activity.snapshot()
+        if self.tournament_id in set(activity["active_tournament_ids"]):
+            await interaction.response.send_message("The season cannot be paused while its race is active.", ephemeral=True)
+            return
+        try:
+            await self.cog.bot.db.pause_tournament(self.tournament_id)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await audit_log(self.cog.bot, "Season Paused", f"Tournament #{self.tournament_id}", interaction.user)
+        await self.refresh_snapshot()
+        await interaction.response.edit_message(embed=season_director_embed(self.snapshot), view=self)
+
+    async def handle_resume(self, interaction: discord.Interaction) -> None:
+        try:
+            await self.cog.bot.db.resume_tournament(self.tournament_id)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await audit_log(self.cog.bot, "Season Resumed", f"Tournament #{self.tournament_id}", interaction.user)
+        await self.refresh_snapshot()
+        await interaction.response.edit_message(embed=season_director_embed(self.snapshot), view=self)
+
+    async def handle_cancel_empty(self, interaction: discord.Interaction) -> None:
+        async def cancel(confirm_interaction: discord.Interaction):
+            try:
+                outcome = await self.cog.bot.db.close_tournament(self.tournament_id)
+            except ValueError as exc:
+                await confirm_interaction.response.edit_message(content=str(exc), embed=None, view=None)
+                return
+            await audit_log(self.cog.bot, "Season Cancelled", f"Tournament #{self.tournament_id}", confirm_interaction.user)
+            await confirm_interaction.response.edit_message(
+                content=f"Season #{self.tournament_id} {outcome}. No scoring history was created.",
+                embed=None,
+                view=None,
+            )
+
+        await interaction.response.send_message(
+            content="Cancel this empty season? This removes it from the active racing world but preserves its administrative record.",
+            view=ConfirmView(interaction.user.id, "Cancel Empty Season", cancel),
+            ephemeral=True,
+        )
+
+    async def handle_end(self, interaction: discord.Interaction) -> None:
+        activity = await self.cog.bot.race_activity.snapshot()
+        if self.tournament_id in set(activity["active_tournament_ids"]):
+            await interaction.response.send_message("The season cannot end while its race is active.", ephemeral=True)
+            return
+
+        async def end(confirm_interaction: discord.Interaction):
+            try:
+                outcome = await self.cog.bot.db.close_tournament(self.tournament_id)
+            except ValueError as exc:
+                await confirm_interaction.response.edit_message(content=str(exc), embed=None, view=None)
+                return
+            await audit_log(self.cog.bot, "Season Ended", f"Tournament #{self.tournament_id}", confirm_interaction.user)
+            await confirm_interaction.response.edit_message(
+                content=f"Season #{self.tournament_id} {outcome}. Final standings and permanent history are now frozen.",
+                embed=None,
+                view=None,
+            )
+
+        completed = int(self.snapshot["completed_rounds"])
+        total = int(self.snapshot["total_rounds"])
+        warning = (
+            f" This is a shortened season ({completed}/{total} scheduled rounds complete)."
+            if total and completed < total else ""
+        )
+        await interaction.response.send_message(
+            content=f"End this championship and freeze Season History?{warning}",
+            view=ConfirmView(interaction.user.id, "End Season", end),
+            ephemeral=True,
+        )
+
+    async def handle_reopen(self, interaction: discord.Interaction) -> None:
+        async def reopen(confirm_interaction: discord.Interaction):
+            activity = await self.cog.bot.race_activity.snapshot()
+            if activity["active_team_ids"] or activity["lobby_team_ids"]:
+                await confirm_interaction.response.edit_message(
+                    content="Reopen is blocked while any race or lobby is active.",
+                    embed=None,
+                    view=None,
+                )
+                return
+            try:
+                result = await self.cog.bot.recovery.restore_tournament(self.tournament_id)
+            except Exception as exc:
+                await confirm_interaction.response.edit_message(
+                    content=f"Season was not reopened: {exc}",
+                    embed=None,
+                    view=None,
+                )
+                return
+            await audit_log(self.cog.bot, "Season Reopened", f"Tournament #{self.tournament_id}", confirm_interaction.user)
+            await confirm_interaction.response.edit_message(
+                content=(
+                    f"**{result['name']}** reopened safely. Its frozen Season History snapshot was removed "
+                    "until the season is ended again."
+                ),
+                embed=None,
+                view=None,
+            )
+
+        await interaction.response.send_message(
+            content=(
+                "Reopen this finished season? A safety backup will be created and its frozen Season History "
+                "will be removed until the championship is closed again."
+            ),
+            view=ConfirmView(interaction.user.id, "Reopen Season", reopen),
+            ephemeral=True,
+        )
+
+    async def handle_championship(self, interaction: discord.Interaction) -> None:
+        standings = await self.cog.bot.db.standings(self.tournament_id)
+        schedule = await self.cog.bot.db.tournament_schedule(self.tournament_id)
+        races = await self.cog.bot.db.tournament_races(self.tournament_id)
+        rivalries = await self.cog.bot.db.tournament_rivalries(self.tournament_id, limit=5)
+        tournament = await self.cog.bot.db.get_tournament(self.tournament_id)
+        await interaction.response.send_message(
+            embed=championship_hub_embed(tournament, standings, schedule, races, rivalries),
+            ephemeral=True,
+        )
+
+
 class TournamentsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -379,6 +806,29 @@ class TournamentsCog(commands.Cog):
         else:
             await interaction.response.send_message(message, ephemeral=True)
 
+    async def send_season_director(
+        self,
+        interaction: discord.Interaction,
+        tournament_id: int | None = None,
+    ) -> None:
+        tournament = (
+            await self.bot.db.get_tournament(int(tournament_id))
+            if tournament_id is not None
+            else await self.bot.db.current_tournament()
+        )
+        if not tournament and tournament_id is None:
+            recent = await self.bot.db.list_tournaments(include_closed=True, limit=1)
+            tournament = recent[0] if recent else None
+        if not tournament:
+            await self._send_private(interaction, "No championship exists yet.")
+            return
+        snapshot = await build_season_director_snapshot(self.bot.db, int(tournament["id"]))
+        view = SeasonDirectorView(self, interaction.user.id, snapshot)
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=season_director_embed(snapshot), view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=season_director_embed(snapshot), view=view, ephemeral=True)
+
     async def send_tournament_preflight(
         self,
         interaction: discord.Interaction,
@@ -396,7 +846,7 @@ class TournamentsCog(commands.Cog):
             await self._send_private(interaction, "Tournament not found.")
             return
         if tournament["status"] != "open":
-            await self._send_private(interaction, "That tournament is closed and cannot run more races.")
+            await self._send_private(interaction, "That championship is not open for racing. Resume it in Season Director if it is paused.")
             return
         try:
             await self.bot.db.require_full_tournament_grid(tournament_id)
@@ -527,6 +977,15 @@ class TournamentsCog(commands.Cog):
 
             events, results, used_seed = engine.run()
             result_dicts = RaceEngine.results_to_dicts(results)
+            if schedule_race_number is not None:
+                await self.bot.db.mark_season_race_state(
+                    tournament_id,
+                    int(schedule_race_number),
+                    track_key,
+                    phase="simulated",
+                    race_simulated=True,
+                    error_text="",
+                )
             reward_embeds: list[discord.Embed] = []
             async with self.bot.recovery_lock:
                 checkpoint_token = await self.bot.recovery.create_race_checkpoint(
@@ -562,6 +1021,17 @@ class TournamentsCog(commands.Cog):
                     return
                 self.bot.recovery.bind_race_checkpoint(checkpoint_token, race_id)
                 await self.bot.recovery.mark_presentation(race_id, -1, "saved")
+                if schedule_race_number is not None:
+                    await self.bot.db.mark_season_race_state(
+                        tournament_id,
+                        int(schedule_race_number),
+                        track_key,
+                        race_id=race_id,
+                        phase="standings_updated",
+                        race_simulated=True,
+                        standings_updated=True,
+                        error_text="",
+                    )
                 result_title = f"{title_prefix} #{race_id} Results"
                 try:
                     reward_embeds = await process_race_rewards(
@@ -575,6 +1045,18 @@ class TournamentsCog(commands.Cog):
                         result_title,
                         engine.laps,
                     )
+                    if schedule_race_number is not None:
+                        await self.bot.db.mark_season_race_state(
+                            tournament_id,
+                            int(schedule_race_number),
+                            track_key,
+                            race_id=race_id,
+                            phase="rewards_processed",
+                            race_simulated=True,
+                            standings_updated=True,
+                            rewards_processed=True,
+                            error_text="",
+                        )
                 except Exception:
                     logging.exception("Tournament post-race processing failed for race %s; restoring checkpoint", race_id)
                     await self.bot.recovery.undo_last_race()
@@ -608,7 +1090,7 @@ class TournamentsCog(commands.Cog):
 
             report_error = None
             try:
-                await send_race_report(
+                report_state = await send_race_report(
                     channel=interaction.channel,
                     db=self.bot.db,
                     track_key=track_key,
@@ -626,9 +1108,36 @@ class TournamentsCog(commands.Cog):
                     persisted_report=True,
                     championship_race=schedule_race_number is not None,
                 )
+                if schedule_race_number is not None:
+                    gazette_ok = bool(report_state.get("gazette_generated"))
+                    await self.bot.db.mark_season_race_state(
+                        tournament_id,
+                        int(schedule_race_number),
+                        track_key,
+                        race_id=race_id,
+                        phase="complete" if gazette_ok else "report_fallback",
+                        race_simulated=True,
+                        standings_updated=True,
+                        rewards_processed=True,
+                        gazette_generated=gazette_ok,
+                        error_text="" if gazette_ok else "Gazette image unavailable; fallback Discord report posted.",
+                    )
             except (discord.HTTPException, OSError) as exc:
                 report_error = exc
                 logging.exception("Tournament race report delivery failed for race %s", race_id)
+                if schedule_race_number is not None:
+                    await self.bot.db.mark_season_race_state(
+                        tournament_id,
+                        int(schedule_race_number),
+                        track_key,
+                        race_id=race_id,
+                        phase="report_error",
+                        race_simulated=True,
+                        standings_updated=True,
+                        rewards_processed=True,
+                        gazette_generated=False,
+                        error_text=f"Race report delivery failed: {exc}",
+                    )
 
             # The final scheduled result closes the championship even if Discord cannot
             # deliver the live report. The database is the source of truth.
@@ -661,6 +1170,10 @@ class TournamentsCog(commands.Cog):
             await message.pin(reason="Final tournament results")
         except (discord.Forbidden, discord.HTTPException):
             await channel.send("Final results posted, but I could not pin them. Check my channel permissions.")
+
+    @app_commands.command(name="season_director", description="Admin: run the current championship from one control centre.")
+    async def season_director(self, interaction: discord.Interaction, tournament_id: int | None = None):
+        await self.send_season_director(interaction, tournament_id)
 
     @app_commands.command(name="tournament_create", description="Create a rat rod tournament.")
     async def tournament_create(self, interaction: discord.Interaction, name: str):
@@ -784,7 +1297,7 @@ class TournamentsCog(commands.Cog):
             await interaction.response.send_message("Tournament not found.", ephemeral=True)
             return
         if tournament["status"] != "open":
-            await interaction.response.send_message("That tournament is closed and cannot run more races.", ephemeral=True)
+            await interaction.response.send_message("That championship is not open for racing. Resume it in Season Director if it is paused.", ephemeral=True)
             return
         if team_ids_csv:
             ids = parse_team_ids_csv(team_ids_csv)
@@ -801,7 +1314,7 @@ class TournamentsCog(commands.Cog):
             await interaction.response.send_message("Tournament not found.", ephemeral=True)
             return
         if tournament["status"] != "open":
-            await interaction.response.send_message("That tournament is closed and cannot run more races.", ephemeral=True)
+            await interaction.response.send_message("That championship is not open for racing. Resume it in Season Director if it is paused.", ephemeral=True)
             return
 
         next_track = await self.bot.db.next_scheduled_track(tournament_id)
@@ -844,8 +1357,8 @@ class TournamentsCog(commands.Cog):
         if not tournament:
             await interaction.response.send_message("Tournament not found.", ephemeral=True)
             return
-        if tournament["status"] != "open":
-            await interaction.response.send_message("That tournament is already closed.", ephemeral=True)
+        if tournament["status"] not in {"open", "paused"}:
+            await interaction.response.send_message("That tournament is already closed or cancelled.", ephemeral=True)
             return
 
         async def close(confirm_interaction: discord.Interaction):
