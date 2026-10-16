@@ -337,6 +337,37 @@ class Database:
             """
         )
 
+        # v0.5.3: backfill already-saved scheduled rounds so upgrading an
+        # in-progress championship does not make earlier operational history
+        # disappear. Gazette generation was not persisted before v0.5.3, so it
+        # remains explicitly unknown/incomplete for these imported rows.
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO season_race_state(
+                tournament_id, round_number, track_key, race_id, phase,
+                race_simulated, standings_updated, rewards_processed,
+                gazette_generated, error_text, updated_at
+            )
+            SELECT
+                r.tournament_id,
+                r.schedule_race_number,
+                r.track_key,
+                r.id,
+                'legacy_imported',
+                1,
+                1,
+                CASE WHEN rp.race_id IS NULL THEN 0 ELSE 1 END,
+                0,
+                'Imported from a pre-v0.5.3 scheduled race; Gazette generation was not previously tracked.',
+                CURRENT_TIMESTAMP
+            FROM races r
+            LEFT JOIN race_processing rp ON rp.race_id=r.id
+            WHERE r.tournament_id IS NOT NULL
+              AND r.schedule_race_number IS NOT NULL
+              AND r.championship_round=1
+            """
+        )
+
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(tournament_teams)").fetchall()}
         stat_columns = {
             "overtakes": "INTEGER NOT NULL DEFAULT 0",
