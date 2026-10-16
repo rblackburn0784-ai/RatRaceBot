@@ -596,7 +596,7 @@ class SeasonDirectorView(ReliableView):
 
         controls = [
             ("start_next", "▶ Start Next Race", discord.ButtonStyle.success, 0, status != "open" or next_entry is None),
-            ("correct", "🛠 Correct Result", discord.ButtonStyle.secondary, 0, not self.snapshot["races"]),
+            ("correct", "🛠 Correct Result", discord.ButtonStyle.secondary, 0, status != "open" or not self.snapshot["races"]),
             ("refresh", "↻ Refresh", discord.ButtonStyle.primary, 0, False),
             ("pause", "⏸ Pause Season", discord.ButtonStyle.secondary, 1, status != "open"),
             ("resume", "▶ Resume Season", discord.ButtonStyle.success, 1, status != "paused"),
