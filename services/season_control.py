@@ -108,6 +108,15 @@ def season_director_embed(snapshot: dict[str, Any]) -> discord.Embed:
         color=discord.Color.gold() if status == "open" else discord.Color.orange(),
     )
 
+    if total:
+        if completed >= total:
+            round_text = f"Schedule complete · **{completed}/{total} rounds finished**"
+        else:
+            round_text = f"Current: **Round {completed + 1}/{total}** · Completed: **{completed}**"
+    else:
+        round_text = f"Completed scoring rounds: **{len([race for race in snapshot['races'] if int(_get(race, 'championship_round', 0)) == 1])}**"
+    embed.add_field(name="🗓️ Round Control", value=round_text, inline=False)
+
     if next_entry:
         embed.add_field(
             name="🏁 Next Race",
