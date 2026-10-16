@@ -235,6 +235,7 @@ class RecoveryManager:
                 "team_profiles", "team_rivalries", "season_history", "team_season_history",
                 "team_progress", "team_achievements", "sponsor_offers", "team_identity",
                 "team_fatigue", "track_records", "team_setups", "race_processing",
+                "season_race_state", "season_control_log",
                 "recovery_log", "race_presentation_state", "rivalry_story_stats",
                 "racing_world_processed", "world_events",
             }
@@ -324,6 +325,8 @@ class RecoveryManager:
                 "race processing rows": "SELECT COUNT(*) AS c FROM race_processing x LEFT JOIN races r ON r.id=x.race_id WHERE r.id IS NULL",
                 "world processing rows": "SELECT COUNT(*) AS c FROM racing_world_processed x LEFT JOIN races r ON r.id=x.race_id WHERE r.id IS NULL",
                 "race presentation rows": "SELECT COUNT(*) AS c FROM race_presentation_state x LEFT JOIN races r ON r.id=x.race_id WHERE r.id IS NULL",
+                "season race state rows": "SELECT COUNT(*) AS c FROM season_race_state x LEFT JOIN tournaments tr ON tr.id=x.tournament_id LEFT JOIN races r ON r.id=x.race_id WHERE tr.id IS NULL OR (x.race_id IS NOT NULL AND r.id IS NULL)",
+                "season control log rows": "SELECT COUNT(*) AS c FROM season_control_log x LEFT JOIN tournaments tr ON tr.id=x.tournament_id WHERE tr.id IS NULL",
             }
             for label, sql in orphan_checks.items():
                 count = int(conn.execute(sql).fetchone()["c"])
@@ -331,12 +334,15 @@ class RecoveryManager:
                     issues.append(f"Orphaned {label}: {count} row(s).")
 
             open_tournaments = conn.execute(
-                "SELECT id, name FROM tournaments WHERE status='open' ORDER BY id"
+                "SELECT id, name, status FROM tournaments WHERE status IN ('open','paused') ORDER BY id"
             ).fetchall()
             if len(open_tournaments) > 1:
                 issues.append(
                     "Multiple active championships detected: "
-                    + ", ".join(f"#{int(row['id'])} {row['name']}" for row in open_tournaments)
+                    + ", ".join(
+                        f"#{int(row['id'])} {row['name']} ({row['status']})"
+                        for row in open_tournaments
+                    )
                 )
 
             latest = conn.execute("SELECT MAX(id) AS id FROM races").fetchone()
@@ -601,10 +607,18 @@ class RecoveryManager:
         row = await self.db.get_tournament(int(tournament_id))
         if not row:
             raise RecoveryError("Tournament not found.")
-        if str(row["status"]) == "open":
-            return {"tournament_id": tournament_id, "name": row["name"], "already_open": True}
+        if str(row["status"]) in {"open", "paused"}:
+            return {
+                "tournament_id": tournament_id,
+                "name": row["name"],
+                "already_open": True,
+                "status": str(row["status"]),
+            }
 
-        open_rows = await self.db.fetchall("SELECT id, name FROM tournaments WHERE status='open' AND id<>? ORDER BY id", (int(tournament_id),))
+        open_rows = await self.db.fetchall(
+            "SELECT id, name FROM tournaments WHERE status IN ('open','paused') AND id<>? ORDER BY id",
+            (int(tournament_id),),
+        )
         if open_rows:
             raise RecoveryError(
                 "Another tournament is already open. Close it before restoring this tournament."
@@ -617,6 +631,10 @@ class RecoveryManager:
                 conn.execute("UPDATE tournaments SET status='open' WHERE id=?", (int(tournament_id),))
                 conn.execute("DELETE FROM season_history WHERE tournament_id=?", (int(tournament_id),))
                 conn.execute("DELETE FROM team_season_history WHERE tournament_id=?", (int(tournament_id),))
+                conn.execute(
+                    "INSERT INTO season_control_log(tournament_id, action, details_json) VALUES (?, 'reopen', ?)",
+                    (int(tournament_id), json.dumps({"safety": str(safety)})),
+                )
                 conn.commit()
             except Exception:
                 conn.rollback()

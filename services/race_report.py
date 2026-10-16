@@ -32,7 +32,7 @@ async def send_race_report(
     reward_embeds_override: list[discord.Embed] | None = None,
     persisted_report: bool | None = None,
     championship_race: bool = False,
-) -> None:
+) -> dict[str, bool]:
     result_embed = Embeds.results(results, title=title)
     final_embed = final_embed or classification_embed(results, events, title)
     recap_embed = race_recap_embed(results, title, TRACKS[track_key].name, weather_name)
@@ -88,7 +88,7 @@ async def send_race_report(
             content="Blacktop Gazette race report:",
             file=discord.File(newspaper, filename=f"blacktop_gazette_race_{race_id}.png"),
         )
-        return
+        return {"gazette_generated": True, "fallback_report": False}
 
     await channel.send(embed=result_embed)
     await channel.send(embed=recap_embed)
@@ -99,3 +99,4 @@ async def send_race_report(
     for embed in reward_embeds:
         if embed.title not in explicit_titles and not (embed.title and any(token in embed.title for token in ("Garage Break-In", "Sponsor Dispute", "Newspaper Hype", "Crew Argument", "Surprise Inspection", "Engine Supplier", "Weather Forecast", "Track Repairs"))):
             await channel.send(embed=embed)
+    return {"gazette_generated": False, "fallback_report": True}

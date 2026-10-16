@@ -32,6 +32,22 @@ A full modular `discord.py` starter bot for running 1950s rat rod racing tournam
 - Shared UI error handling catches callback failures and gives drivers a useful response instead of a silent Discord interaction failure.
 
 
+## v0.5.3 Season Control & Administration
+
+v0.5.3 finishes the non-graphical championship administration layer before the graphical broadcast roadmap begins.
+
+- New **Season Director** dashboard shows round progress, next race, leader, mathematical title contenders, recent form and latest operational state.
+- Admin controls: Start Next Race, Correct Result, Pause, Resume, Cancel Empty, End Season, Reopen Season, Championship Hub and Refresh.
+- Paused seasons remain the single active season and keep entered teams locked while racing is suspended.
+- Scheduled rounds persist milestones for race simulated, standings updated, rewards processed and Gazette generated.
+- Season History state is surfaced as pending/complete.
+- Result correction uses the existing conservative pre-race checkpoint recovery and marks the old Gazette as stale after a correction.
+- Destructive season operations require confirmation; reopening creates a safety backup first.
+- No race balance, points, parts, sponsors or progression formulas changed.
+
+See `SEASON_CONTROL_v0.5.3.md` and `UPGRADE_v0.5.3.md`.
+
+
 ## v0.5.2a Original Gazette Template Alignment
 
 v0.5.2a aligns the renderer to the supplied **1103×1426** original Blacktop Gazette artwork.

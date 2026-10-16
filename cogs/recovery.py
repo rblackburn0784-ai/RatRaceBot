@@ -30,7 +30,7 @@ EXPECTED_SLASH_COMMANDS = {
     "sponsor_offers", "team_identity", "track_records", "team_delete", "parts_wizard",
     "pit_crew_wizard", "team_add_part", "team_remove_part",
     "tournament_create", "tournament_wizard", "tournament_add_team", "tournament_standings",
-    "tournament_stats", "season_history", "championship", "tournament_start_race",
+    "tournament_stats", "season_history", "championship", "season_director", "tournament_start_race",
     "tournament_next_race", "tournament_schedule", "tournament_close",
     "world_events", "world_event_choose", "rivalry_story",
 }
@@ -45,7 +45,7 @@ RESULT_STATUS_CHOICES = [
 
 
 class RecoveryCog(commands.Cog):
-    """v0.5.1 administration, health and recovery tools."""
+    """v0.5.3 administration, health and recovery tools."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot

@@ -85,7 +85,7 @@ class SeasonReliabilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_database_validation_checks_all_persistent_subsystems(self):
         report = await self.recovery.validate_database()
         self.assertTrue(report["ok"], report)
-        self.assertEqual(report["tables_checked"], 22)
+        self.assertEqual(report["tables_checked"], 24)
 
         await self.db.execute(
             "INSERT INTO sponsor_offers(team_id, sponsor_name, benefit_text, drawback_text) VALUES (?, ?, ?, ?)",
@@ -125,7 +125,7 @@ class CommandHealthTests(unittest.IsolatedAsyncioTestCase):
             text = path.read_text(encoding="utf-8")
             found.update(re.findall(r'@app_commands\.command\(\s*name\s*=\s*["\']([^"\']+)["\']', text))
         self.assertEqual(found, EXPECTED_SLASH_COMMANDS)
-        self.assertEqual(len(found), 59)
+        self.assertEqual(len(found), 60)
 
     async def test_check_failure_does_not_send_second_message_after_permission_denial(self):
         class Response:

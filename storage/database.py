@@ -208,6 +208,29 @@ CREATE TABLE IF NOT EXISTS race_processing (
     race_id INTEGER PRIMARY KEY,
     processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS season_race_state (
+    tournament_id INTEGER NOT NULL,
+    round_number INTEGER NOT NULL,
+    track_key TEXT NOT NULL,
+    race_id INTEGER,
+    phase TEXT NOT NULL DEFAULT 'pending',
+    race_simulated INTEGER NOT NULL DEFAULT 0,
+    standings_updated INTEGER NOT NULL DEFAULT 0,
+    rewards_processed INTEGER NOT NULL DEFAULT 0,
+    gazette_generated INTEGER NOT NULL DEFAULT 0,
+    error_text TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (tournament_id, round_number)
+);
+
+CREATE TABLE IF NOT EXISTS season_control_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tournament_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    details_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 class Database:
@@ -282,6 +305,67 @@ class Database:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS race_processing ("
             "race_id INTEGER PRIMARY KEY, processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS season_race_state (
+                tournament_id INTEGER NOT NULL,
+                round_number INTEGER NOT NULL,
+                track_key TEXT NOT NULL,
+                race_id INTEGER,
+                phase TEXT NOT NULL DEFAULT 'pending',
+                race_simulated INTEGER NOT NULL DEFAULT 0,
+                standings_updated INTEGER NOT NULL DEFAULT 0,
+                rewards_processed INTEGER NOT NULL DEFAULT 0,
+                gazette_generated INTEGER NOT NULL DEFAULT 0,
+                error_text TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (tournament_id, round_number)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS season_control_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tournament_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                details_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        # v0.5.3: backfill already-saved scheduled rounds so upgrading an
+        # in-progress championship does not make earlier operational history
+        # disappear. Gazette generation was not persisted before v0.5.3, so it
+        # remains explicitly unknown/incomplete for these imported rows.
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO season_race_state(
+                tournament_id, round_number, track_key, race_id, phase,
+                race_simulated, standings_updated, rewards_processed,
+                gazette_generated, error_text, updated_at
+            )
+            SELECT
+                r.tournament_id,
+                r.schedule_race_number,
+                r.track_key,
+                r.id,
+                'legacy_imported',
+                1,
+                1,
+                CASE WHEN rp.race_id IS NULL THEN 0 ELSE 1 END,
+                0,
+                'Imported from a pre-v0.5.3 scheduled race; Gazette generation was not previously tracked.',
+                CURRENT_TIMESTAMP
+            FROM races r
+            LEFT JOIN race_processing rp ON rp.race_id=r.id
+            WHERE r.tournament_id IS NOT NULL
+              AND r.schedule_race_number IS NOT NULL
+              AND r.championship_round=1
+            """
         )
 
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(tournament_teams)").fetchall()}
@@ -654,7 +738,7 @@ class Database:
             SELECT 1
             FROM tournament_teams tt
             JOIN tournaments t ON t.id = tt.tournament_id
-            WHERE tt.team_id=? AND t.status='open'
+            WHERE tt.team_id=? AND t.status IN ('open','paused')
             LIMIT 1
             """,
             (team_id,),
@@ -671,7 +755,7 @@ class Database:
                     SELECT 1
                     FROM tournament_teams tt
                     JOIN tournaments t ON t.id = tt.tournament_id
-                    WHERE tt.team_id=? AND t.status='open'
+                    WHERE tt.team_id=? AND t.status IN ('open','paused')
                     LIMIT 1
                     """,
                     (team_id,),
@@ -683,7 +767,7 @@ class Database:
                     """
                     DELETE FROM tournament_teams
                     WHERE team_id=?
-                      AND tournament_id IN (SELECT id FROM tournaments WHERE status!='open')
+                      AND tournament_id IN (SELECT id FROM tournaments WHERE status NOT IN ('open','paused'))
                     """,
                     (team_id,),
                 )
@@ -751,7 +835,7 @@ class Database:
     @staticmethod
     def _ensure_no_open_tournament_conn(conn: sqlite3.Connection) -> None:
         current = conn.execute(
-            "SELECT id, name FROM tournaments WHERE status='open' ORDER BY id DESC LIMIT 1"
+            "SELECT id, name, status FROM tournaments WHERE status IN ('open','paused') ORDER BY id DESC LIMIT 1"
         ).fetchone()
         if current:
             raise ValueError(
@@ -950,7 +1034,7 @@ class Database:
 
     async def current_tournament(self):
         return await self.fetchone(
-            "SELECT * FROM tournaments WHERE status='open' ORDER BY id DESC LIMIT 1"
+            "SELECT * FROM tournaments WHERE status IN ('open','paused') ORDER BY id DESC LIMIT 1"
         )
 
     async def list_tournaments(self, include_closed: bool = True, limit: int = 25):
@@ -960,7 +1044,7 @@ class Database:
                 (limit,),
             )
         return await self.fetchall(
-            "SELECT * FROM tournaments WHERE status='open' ORDER BY id DESC LIMIT ?",
+            "SELECT * FROM tournaments WHERE status IN ('open','paused') ORDER BY id DESC LIMIT ?",
             (limit,),
         )
 
@@ -976,6 +1060,134 @@ class Database:
         if count != 10:
             raise ValueError(f"Tournament races require exactly 10 entered teams; this tournament has {count}.")
 
+    async def pause_tournament(self, tournament_id: int) -> None:
+        async with self.lock:
+            conn = self._require()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT * FROM tournaments WHERE id=?", (int(tournament_id),)).fetchone()
+                if not row:
+                    raise ValueError("Tournament not found.")
+                if row["status"] == "paused":
+                    conn.rollback()
+                    return
+                if row["status"] != "open":
+                    raise ValueError("Only an open championship can be paused.")
+                conn.execute("UPDATE tournaments SET status='paused' WHERE id=?", (int(tournament_id),))
+                conn.execute(
+                    "INSERT INTO season_control_log(tournament_id, action, details_json) VALUES (?, 'pause', '{}')",
+                    (int(tournament_id),),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    async def resume_tournament(self, tournament_id: int) -> None:
+        async with self.lock:
+            conn = self._require()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT * FROM tournaments WHERE id=?", (int(tournament_id),)).fetchone()
+                if not row:
+                    raise ValueError("Tournament not found.")
+                if row["status"] == "open":
+                    conn.rollback()
+                    return
+                if row["status"] != "paused":
+                    raise ValueError("Only a paused championship can be resumed.")
+                other = conn.execute(
+                    "SELECT id, name FROM tournaments WHERE status IN ('open','paused') AND id<>? LIMIT 1",
+                    (int(tournament_id),),
+                ).fetchone()
+                if other:
+                    raise ValueError(f"Another championship is already active: #{int(other['id'])} {other['name']}.")
+                conn.execute("UPDATE tournaments SET status='open' WHERE id=?", (int(tournament_id),))
+                conn.execute(
+                    "INSERT INTO season_control_log(tournament_id, action, details_json) VALUES (?, 'resume', '{}')",
+                    (int(tournament_id),),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    async def mark_season_race_state(
+        self,
+        tournament_id: int,
+        round_number: int,
+        track_key: str,
+        *,
+        race_id: int | None = None,
+        phase: str | None = None,
+        race_simulated: bool | None = None,
+        standings_updated: bool | None = None,
+        rewards_processed: bool | None = None,
+        gazette_generated: bool | None = None,
+        error_text: str | None = None,
+    ) -> None:
+        existing = await self.fetchone(
+            "SELECT * FROM season_race_state WHERE tournament_id=? AND round_number=?",
+            (int(tournament_id), int(round_number)),
+        )
+        values = {
+            "race_id": race_id if race_id is not None else (existing["race_id"] if existing else None),
+            "phase": phase if phase is not None else (existing["phase"] if existing else "pending"),
+            "race_simulated": int(race_simulated) if race_simulated is not None else int(existing["race_simulated"] if existing else 0),
+            "standings_updated": int(standings_updated) if standings_updated is not None else int(existing["standings_updated"] if existing else 0),
+            "rewards_processed": int(rewards_processed) if rewards_processed is not None else int(existing["rewards_processed"] if existing else 0),
+            "gazette_generated": int(gazette_generated) if gazette_generated is not None else int(existing["gazette_generated"] if existing else 0),
+            "error_text": str(error_text) if error_text is not None else str(existing["error_text"] if existing else ""),
+        }
+        await self.execute(
+            """
+            INSERT INTO season_race_state(
+                tournament_id, round_number, track_key, race_id, phase,
+                race_simulated, standings_updated, rewards_processed,
+                gazette_generated, error_text, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(tournament_id, round_number) DO UPDATE SET
+                track_key=excluded.track_key,
+                race_id=excluded.race_id,
+                phase=excluded.phase,
+                race_simulated=excluded.race_simulated,
+                standings_updated=excluded.standings_updated,
+                rewards_processed=excluded.rewards_processed,
+                gazette_generated=excluded.gazette_generated,
+                error_text=excluded.error_text,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (
+                int(tournament_id), int(round_number), str(track_key), values["race_id"], values["phase"],
+                values["race_simulated"], values["standings_updated"], values["rewards_processed"],
+                values["gazette_generated"], values["error_text"],
+            ),
+        )
+
+    async def latest_season_race_state(self, tournament_id: int):
+        return await self.fetchone(
+            """
+            SELECT * FROM season_race_state
+            WHERE tournament_id=?
+            ORDER BY round_number DESC
+            LIMIT 1
+            """,
+            (int(tournament_id),),
+        )
+
+    async def season_race_states(self, tournament_id: int):
+        return await self.fetchall(
+            "SELECT * FROM season_race_state WHERE tournament_id=? ORDER BY round_number",
+            (int(tournament_id),),
+        )
+
+    async def season_control_log(self, tournament_id: int, limit: int = 20):
+        return await self.fetchall(
+            "SELECT * FROM season_control_log WHERE tournament_id=? ORDER BY id DESC LIMIT ?",
+            (int(tournament_id), int(limit)),
+        )
+
     async def close_tournament(self, tournament_id: int) -> str:
         """Close a raced season, or safely cancel an empty legacy/partial season."""
         if await self.tournament_championship_race_count(tournament_id) > 0:
@@ -986,8 +1198,16 @@ class Database:
             conn = self._require()
             try:
                 conn.execute("BEGIN IMMEDIATE")
-                tournament = self._require_open_tournament_conn(conn, tournament_id)
+                tournament = conn.execute("SELECT * FROM tournaments WHERE id=?", (int(tournament_id),)).fetchone()
+                if not tournament:
+                    raise ValueError("Tournament not found.")
+                if tournament["status"] not in {"open", "paused"}:
+                    raise ValueError("Only an active championship can be cancelled.")
                 conn.execute("UPDATE tournaments SET status='cancelled' WHERE id=?", (int(tournament_id),))
+                conn.execute(
+                    "INSERT INTO season_control_log(tournament_id, action, details_json) VALUES (?, 'cancel', '{}')",
+                    (int(tournament_id),),
+                )
                 conn.commit()
                 return "cancelled"
             except Exception:
@@ -1689,6 +1909,10 @@ class Database:
                     )
 
                 conn.execute("UPDATE tournaments SET status='closed' WHERE id=?", (tournament_id,))
+                conn.execute(
+                    "INSERT INTO season_control_log(tournament_id, action, details_json) VALUES (?, 'end_season', ?)",
+                    (int(tournament_id), json.dumps({"standings_rows": len(standings)})),
+                )
                 conn.commit()
                 return rows
             except Exception:

@@ -340,7 +340,7 @@ class AdminPanelView(ReliableView):
             ("team_add_part", "Team Add Part", 1, discord.ButtonStyle.secondary),
             ("team_remove_part", "Team Remove Part", 1, discord.ButtonStyle.secondary),
             ("tournament_wizard", "Tournament Wizard", 2, discord.ButtonStyle.success),
-            ("tournament_create", "Tournament Create", 2, discord.ButtonStyle.primary),
+            ("season_director", "Season Director", 2, discord.ButtonStyle.success),
             ("tournament_add_team", "Tournament Add Team", 2, discord.ButtonStyle.secondary),
             ("tournament_standings", "Standings", 2, discord.ButtonStyle.secondary),
             ("tournament_stats", "Tournament Stats", 2, discord.ButtonStyle.secondary),
@@ -583,6 +583,13 @@ class AdminPanelView(ReliableView):
             )
 
         await self._choose_team(interaction, "Choose a team to remove a part.", choose_part)
+
+    async def _handle_season_director(self, interaction: discord.Interaction) -> None:
+        tournaments_cog = self._tournaments_cog()
+        if not tournaments_cog:
+            await interaction.response.send_message("Tournament tools are not loaded.", ephemeral=True)
+            return
+        await tournaments_cog.send_season_director(interaction)
 
     async def _handle_tournament_wizard(self, interaction: discord.Interaction) -> None:
         tournaments_cog = self._tournaments_cog()
